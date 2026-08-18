@@ -37,15 +37,31 @@ class TicketmasterService:
     ) -> list[dict]:
         """
         Fetch events near a lat/lng point for a given date.
-        Pages through up to 3 pages (max 200 results) to avoid hammering the API.
-        Returns normalized event objects matching our internal schema.
+
+        NOTE: Ticketmaster's startDateTime/endDateTime filter is unreliable —
+        some events exist in their system but don't surface via date-range queries.
+        Strategy: fetch a broader 7-day window, then filter client-side to the
+        requested date. This catches events TM's date filter would miss.
+
+        Pages through up to 3 pages (max 600 events). Filters to requested date.
         """
         if not self._has_key():
             logger.warning("Ticketmaster API key not set — returning empty list")
             return []
 
-        # Build date window — full day in UTC (Ticketmaster uses ISO8601 with Z)
-        start_dt, end_dt = self._date_to_window(date)
+        from datetime import date as date_type, timedelta
+        if not date:
+            target_date = date_type.today()
+        else:
+            target_date = date_type.fromisoformat(date)
+
+        # Fetch ±3 days window to catch events TM's date filter misses,
+        # then filter client-side to the exact requested date.
+        window_start = target_date - timedelta(days=1)
+        window_end = target_date + timedelta(days=3)
+        start_dt = f"{window_start.isoformat()}T00:00:00Z"
+        end_dt = f"{window_end.isoformat()}T23:59:59Z"
+        target_str = target_date.isoformat()  # YYYY-MM-DD for client-side filter
 
         all_events: list[dict] = []
 
@@ -81,7 +97,8 @@ class TicketmasterService:
 
                 for raw in events_raw:
                     normalized = self._normalize_event(raw)
-                    if normalized:
+                    # Client-side date filter — only keep events on requested date
+                    if normalized and normalized.get("date") == target_str:
                         all_events.append(normalized)
 
                 total_pages = page_info.get("totalPages", 1)
