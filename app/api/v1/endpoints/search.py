@@ -174,13 +174,13 @@ async def search_venues(
             )
             db_venues_raw = db_results.scalars().all()
 
-            # Sort: exact match first, then prefix, then contains
+            # Sort: exact match first, then prefix (shorter names first), then contains
             q_lower = q.lower()
             def _relevance(v):
                 n = v.name.lower()
-                if n == q_lower: return 0
-                if n.startswith(q_lower): return 1
-                return 2
+                if n == q_lower: return (0, 0, n)
+                if n.startswith(q_lower): return (1, len(n), n)
+                return (2, len(n), n)
             db_venues = sorted(db_venues_raw, key=_relevance)[:50]
 
             db_venue_ids = {v.id for v in db_venues}
