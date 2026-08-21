@@ -147,22 +147,9 @@ US_METROS = [
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
-# OSM query: music venues, nightclubs, concert halls within radius
-OSM_QUERY_TEMPLATE = """
-[out:json][timeout:60];
-(
-  node["amenity"="music_venue"](around:{radius},{lat},{lng});
-  way["amenity"="music_venue"](around:{radius},{lat},{lng});
-  node["amenity"="nightclub"]["live_music"="yes"](around:{radius},{lat},{lng});
-  node["amenity"="bar"]["live_music"="yes"](around:{radius},{lat},{lng});
-  node["venue"="concert_hall"](around:{radius},{lat},{lng});
-  node["venue"="music_venue"](around:{radius},{lat},{lng});
-  node["venue"="club"](around:{radius},{lat},{lng});
-  way["venue"="concert_hall"](around:{radius},{lat},{lng});
-  way["venue"="music_venue"](around:{radius},{lat},{lng});
-);
-out center tags;
-"""
+# OSM query: music venues, nightclubs, concert halls within bounding box
+# bbox format: south,west,north,east
+OSM_QUERY_TEMPLATE = "[out:json][timeout:60];( node[\"amenity\"=\"music_venue\"]({s},{w},{n},{e}); way[\"amenity\"=\"music_venue\"]({s},{w},{n},{e}); node[\"amenity\"=\"nightclub\"][\"live_music\"=\"yes\"]({s},{w},{n},{e}); node[\"amenity\"=\"bar\"][\"live_music\"=\"yes\"]({s},{w},{n},{e}); node[\"venue\"=\"concert_hall\"]({s},{w},{n},{e}); node[\"venue\"=\"music_venue\"]({s},{w},{n},{e}); way[\"venue\"=\"concert_hall\"]({s},{w},{n},{e}); way[\"venue\"=\"music_venue\"]({s},{w},{n},{e}); );out center tags;"
 
 
 def normalize_osm_venue(element: dict, city_name: str, state: str = ""):
@@ -218,11 +205,18 @@ def normalize_osm_venue(element: dict, city_name: str, state: str = ""):
 
 async def fetch_osm_venues(client: httpx.AsyncClient, metro: tuple) -> list[dict]:
     name, lat, lng, radius_km = metro
-    radius_m = radius_km * 1000
-    query = OSM_QUERY_TEMPLATE.format(lat=lat, lng=lng, radius=radius_m)
+    # Convert radius to bounding box (1 deg lat ≈ 111km, 1 deg lng ≈ 111km * cos(lat))
+    import math
+    dlat = radius_km / 111.0
+    dlng = radius_km / (111.0 * math.cos(math.radians(lat)))
+    s, n = lat - dlat, lat + dlat
+    w, e = lng - dlng, lng + dlng
+    query = OSM_QUERY_TEMPLATE.format(s=round(s,4), n=round(n,4), w=round(w,4), e=round(e,4))
 
     try:
-        resp = await client.post(OVERPASS_URL, data={"data": query}, timeout=90.0)
+        from urllib.parse import quote as _quote
+        url = OVERPASS_URL + "?data=" + _quote(query)
+        resp = await client.get(url, timeout=90.0, headers={"User-Agent": "OnStageApp/1.0 venue-seeder", "Accept": "*/*"})
         resp.raise_for_status()
         data = resp.json()
         elements = data.get("elements", [])
