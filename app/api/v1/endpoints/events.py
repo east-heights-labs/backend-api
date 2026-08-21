@@ -56,21 +56,9 @@ async def get_events(
     # JamBase events without a time get matched against TM events by headliner+venue only
     events = tm_events + jb_events
 
-    # Build TM headliner → set of normalized venue names index
-    # Used in Pass 0 to suppress JamBase dupes when TM has same headliner+venue
-    tm_headliner_venues: dict[str, set[str]] = {}
-    for e in tm_events:
-        h = (e.get('headliner') or {}).get('name', '').lower().strip()
-        v_raw = (e.get('venue') or {}).get('name', '')
-        v = _normalize_venue_name(v_raw)
-        if h and v:
-            tm_headliner_venues.setdefault(h, set()).add(v)
-
     # Deduplicate events.
-    # Two passes:
-    # 1. By source_id (TM event ID) — catches pagination returning same event twice
-    # 2. By (headliner, normalized_venue, time) — catches same show with two TM venue records
-    #    e.g. 'Toyota Center' vs 'Toyota Center - TX' (same place, two TM venue IDs)
+    # Pass 0: JamBase vs TM cross-source dedup (headliner+venue)
+    # Pass 1-4: same-source dedup (source_id, fingerprint, coords, address)
 
     import re
 
@@ -102,6 +90,14 @@ async def get_events(
         tokens = [road_types.get(t, t) for t in tokens]
         # Keep house number + first 2 street tokens: "7620 katy fwy"
         return ' '.join(tokens[:3]).strip()
+
+    # Build TM headliner → normalized venue names index (now that _normalize_venue_name is defined)
+    tm_headliner_venues: dict[str, set[str]] = {}
+    for e in tm_events:
+        h = (e.get('headliner') or {}).get('name', '').lower().strip()
+        v = _normalize_venue_name((e.get('venue') or {}).get('name', ''))
+        if h and v:
+            tm_headliner_venues.setdefault(h, set()).add(v)
 
     seen_source_ids: set[str] = set()
     seen_fingerprints: set[str] = set()
