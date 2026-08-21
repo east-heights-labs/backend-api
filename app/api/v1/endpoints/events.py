@@ -51,15 +51,26 @@ async def get_events(
         date=date,
     )
 
-    events.sort(key=lambda e: (e.get("doors_time") or "99:99:99"))
+    # Deduplicate by source_id (TM event ID) — pagination can return the same event twice
+    seen_ids: set[str] = set()
+    unique_events: list[dict] = []
+    for event in events:
+        sid = event.get("source_id")
+        if sid and sid in seen_ids:
+            continue
+        if sid:
+            seen_ids.add(sid)
+        unique_events.append(event)
 
-    logger.info(f"Events: {len(events)} via Ticketmaster near ({lat},{lng}) for {date}")
+    unique_events.sort(key=lambda e: (e.get("doors_time") or "99:99:99"))
+
+    logger.info(f"Events: {len(unique_events)} unique ({len(events)} raw) via Ticketmaster near ({lat},{lng}) for {date}")
 
     return {
         "date": date,
         "location": {"lat": lat, "lng": lng},
         "radius_miles": radius,
         "sources": ["ticketmaster"],
-        "count": len(events),
-        "events": events,
+        "count": len(unique_events),
+        "events": unique_events,
     }
