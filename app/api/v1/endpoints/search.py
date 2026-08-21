@@ -199,7 +199,46 @@ async def search_venues(
         logger.info(f"Venue search '{q}': {len(venues)} DB results (skipping TM supplement)")
         return {"query": q, "count": len(venues), "venues": venues}
     
-    # TM supplement — catch venues not yet in our DB
+    # Phase 1.5: JamBase supplement — independent venues TM doesn't have
+    if len(db_venues) < 10 and settings.JAMBASE_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as jb_client:
+                jb_resp = await jb_client.get(
+                    "https://api.data.jambase.com/v3/venues",
+                    params={"venueName": q},
+                    headers={"Authorization": f"Bearer {settings.JAMBASE_API_KEY}", "Accept": "application/json"}
+                )
+                if jb_resp.status_code == 200:
+                    jb_data = jb_resp.json()
+                    for jb_venue in jb_data.get("venues", []):
+                        addr = jb_venue.get("address", {})
+                        geo = jb_venue.get("geo", {})
+                        if not geo.get("latitude") or not geo.get("longitude"):
+                            continue
+                        # Only US venues
+                        if addr.get("addressCountry", {}).get("identifier") != "US":
+                            continue
+                        jb_id = f"jb_{jb_venue.get('identifier', '').replace('jambase:', 'venue_')}"
+                        if jb_id in db_venue_ids:
+                            continue
+                        city = addr.get("addressLocality", "")
+                        state = addr.get("addressRegion", {}).get("alternateName", "")
+                        website = next((s["url"] for s in jb_venue.get("sameAs", []) if s.get("identifier") == "officialSite"), None)
+                        venues.append({
+                            "venue_id": jb_id,
+                            "venue_name": jb_venue.get("name", ""),
+                            "city": f"{city}, {state}" if state else city,
+                            "lat": float(geo["latitude"]),
+                            "lng": float(geo["longitude"]),
+                            "address": addr.get("streetAddress"),
+                            "source": "jambase",
+                            "next_event": None,
+                        })
+                        db_venue_ids.add(jb_id)
+        except Exception as e:
+            logger.warning(f"JamBase venue search failed: {e}")
+
+    # Phase 2: TM supplement — catch venues not yet in our DB
     start_dt, end_dt = _date_window(date)
     async with httpx.AsyncClient(timeout=15.0) as client:
         tasks = [
