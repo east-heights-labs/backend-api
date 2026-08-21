@@ -1,21 +1,23 @@
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from typing import List
+import os
 
 
 class Settings(BaseSettings):
     # App
     APP_ENV: str = "development"
     APP_SECRET_KEY: str = "change-me"
-    DEBUG: bool = True
+    DEBUG: bool = False
 
     # Database
-    DATABASE_URL: str = "postgresql://user:password@localhost:5432/eastheightslabs"
+    DATABASE_URL: str = ""
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # CORS
-    ALLOWED_ORIGINS: List[str] = ["*"]
+    # CORS — accepts comma-separated string or JSON list
+    ALLOWED_ORIGINS: str = "*"
 
     # External APIs — Live Near Me
     SONGKICK_API_KEY: str = ""
@@ -23,6 +25,7 @@ class Settings(BaseSettings):
     TICKETMASTER_API_KEY: str = ""
     SETLIST_FM_API_KEY: str = ""
     EVENTBRITE_API_KEY: str = ""
+    JAMBASE_API_KEY: str = ""
 
     # Google
     GOOGLE_MAPS_API_KEY: str = ""
@@ -33,8 +36,16 @@ class Settings(BaseSettings):
     REDDIT_CLIENT_SECRET: str = ""
     REDDIT_USER_AGENT: str = "EastHeightsLabs/1.0"
 
+    @property
+    def allowed_origins_list(self) -> List[str]:
+        """Parse ALLOWED_ORIGINS as comma-separated or wildcard."""
+        if self.ALLOWED_ORIGINS == "*":
+            return ["*"]
+        return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
+
     class Config:
-        env_file = ".env"
+        # Only load .env file in local dev — not on Vercel (env vars set directly)
+        env_file = ".env" if os.path.exists(".env") else None
         case_sensitive = True
 
 
