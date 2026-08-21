@@ -16,7 +16,9 @@ _db_url = (settings.DATABASE_URL or "").replace("postgresql://", "postgresql+asy
 _db_ready = bool(_db_url and "localhost" not in _db_url and "user:password" not in _db_url)
 
 if _db_ready:
-    engine = create_async_engine(_db_url, echo=settings.DEBUG)
+    # Railway requires SSL; pass ssl=True via connect_args for asyncpg
+    _connect_args = {"ssl": True} if "railway" in _db_url else {}
+    engine = create_async_engine(_db_url, echo=settings.DEBUG, connect_args=_connect_args)
     AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 else:
     logger.warning("DATABASE_URL not configured or is placeholder — DB features disabled")
