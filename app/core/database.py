@@ -20,8 +20,16 @@ _db_url = _clean_url.replace("postgresql://", "postgresql+asyncpg://")
 _db_ready = bool(_db_url and "localhost" not in _db_url and "user:password" not in _db_url and _clean_url)
 
 if _db_ready:
-    # Railway requires SSL; pass ssl=True via connect_args for asyncpg
-    _connect_args = {"ssl": True} if ("railway" in _db_url or "rlwy.net" in _db_url) else {}
+    # Railway uses a self-signed cert — disable verification
+    import ssl as _ssl
+    _is_railway = "rlwy.net" in _db_url or "railway" in _db_url
+    if _is_railway:
+        _ssl_ctx = _ssl.create_default_context()
+        _ssl_ctx.check_hostname = False
+        _ssl_ctx.verify_mode = _ssl.CERT_NONE
+        _connect_args = {"ssl": _ssl_ctx}
+    else:
+        _connect_args = {}
     engine = create_async_engine(_db_url, echo=settings.DEBUG, connect_args=_connect_args)
     AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 else:
