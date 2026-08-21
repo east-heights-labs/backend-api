@@ -62,16 +62,35 @@ async def get_events(
     def _normalize_venue_name(name: str) -> str:
         """Strip state suffixes and punctuation for fuzzy venue matching."""
         name = name.lower().strip()
-        # Remove trailing " - TX", " - CA", etc.
         name = re.sub(r'\s*-\s*[a-z]{2}$', '', name)
-        # Remove trailing state abbreviations with comma: ", tx"
         name = re.sub(r',\s*[a-z]{2}$', '', name)
-        # Strip punctuation
         name = re.sub(r'[^a-z0-9\s]', '', name)
         return name.strip()
 
+    def _normalize_address(addr: str) -> str:
+        """Normalize street address for matching — house number + street name only."""
+        if not addr:
+            return ""
+        addr = addr.lower().strip()
+        addr = re.sub(r',.*$', '', addr)           # drop everything after first comma
+        addr = re.sub(r'#.*$', '', addr)            # drop unit numbers
+        addr = re.sub(r'\bste\.?\s*\d*', '', addr) # drop suite
+        addr = re.sub(r'[^a-z0-9\s]', '', addr)    # strip punctuation
+        # Normalize common road type abbreviations
+        road_types = {
+            'freeway': 'fwy', 'highway': 'hwy', 'boulevard': 'blvd',
+            'avenue': 'ave', 'street': 'st', 'drive': 'dr',
+            'road': 'rd', 'lane': 'ln', 'court': 'ct', 'place': 'pl',
+            'parkway': 'pkwy', 'circle': 'cir', 'way': 'way',
+        }
+        tokens = addr.split()
+        tokens = [road_types.get(t, t) for t in tokens]
+        # Keep house number + first 2 street tokens: "7620 katy fwy"
+        return ' '.join(tokens[:3]).strip()
+
     seen_source_ids: set[str] = set()
     seen_fingerprints: set[str] = set()
+    seen_addr_fingerprints: set[str] = set()
     _coord_seen: list[tuple] = []  # (lat, lng, headliner|time key)
     unique_events: list[dict] = []
 
@@ -111,6 +130,16 @@ async def get_events(
 
         if is_coord_dupe:
             continue
+
+        # Pass 4: headliner + normalized street address + time
+        # Catches same venue with bad coordinates but same street address
+        # e.g. 'Houston Improv' vs 'Improv Comedy Club- Houston' both at 7620 Katy Fwy
+        addr = _normalize_address((event.get("venue") or {}).get("address", ""))
+        if addr:
+            addr_fp = f"{headliner}|{addr}|{time}"
+            if addr_fp in seen_addr_fingerprints:
+                continue
+            seen_addr_fingerprints.add(addr_fp)
 
         seen_fingerprints.add(fingerprint)
         unique_events.append(event)
