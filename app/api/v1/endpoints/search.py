@@ -170,10 +170,19 @@ async def search_venues(
             db_results = await db.execute(
                 select(Venue)
                 .where(func.lower(Venue.name).contains(q.lower()))
-                .order_by(Venue.name)
-                .limit(50)
+                .limit(100)  # fetch more, re-sort by relevance
             )
-            db_venues = db_results.scalars().all()
+            db_venues_raw = db_results.scalars().all()
+
+            # Sort: exact match first, then prefix, then contains
+            q_lower = q.lower()
+            def _relevance(v):
+                n = v.name.lower()
+                if n == q_lower: return 0
+                if n.startswith(q_lower): return 1
+                return 2
+            db_venues = sorted(db_venues_raw, key=_relevance)[:50]
+
             db_venue_ids = {v.id for v in db_venues}
             venues = [
                 {
