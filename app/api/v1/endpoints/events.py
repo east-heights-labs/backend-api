@@ -56,15 +56,15 @@ async def get_events(
     # JamBase events without a time get matched against TM events by headliner+venue only
     events = tm_events + jb_events
 
-    # Build TM headliner+venue index for JamBase no-time dedup
-    tm_headliner_venue: set[str] = set()
+    # Build TM headliner → set of normalized venue names index
+    # Used in Pass 0 to suppress JamBase dupes when TM has same headliner+venue
+    tm_headliner_venues: dict[str, set[str]] = {}
     for e in tm_events:
         h = (e.get('headliner') or {}).get('name', '').lower().strip()
-        import re as _re
-        v = _re.sub(r'[^a-z0-9\s]', '', (e.get('venue') or {}).get('name', '').lower())
-        v = _re.sub(r'\s+', ' ', v).strip()
+        v_raw = (e.get('venue') or {}).get('name', '')
+        v = _normalize_venue_name(v_raw)
         if h and v:
-            tm_headliner_venue.add(f'{h}|{v}')
+            tm_headliner_venues.setdefault(h, set()).add(v)
 
     # Deduplicate events.
     # Two passes:
@@ -109,24 +109,23 @@ async def get_events(
     _coord_seen: list[tuple] = []  # (lat, lng, headliner|time key)
     unique_events: list[dict] = []
 
-    def _norm_venue(name: str) -> str:
-        import re as _re
-        n = _re.sub(r'[^a-z0-9\s]', '', name.lower())
-        return _re.sub(r'\s+', ' ', n).strip()
-
     for event in events:
         # Pass 0: suppress JamBase events when TM already has same headliner+venue
         # JamBase often lacks time data so we can't match on time — just headliner+venue.
-        # Also try stripping city names from venue (e.g. 'NOTO Houston' → 'NOTO')
+        # Match strategy: JamBase venue name contains or is contained by TM venue name
         if event.get("source") == "jambase":
             h = (event.get("headliner") or {}).get("name", "").lower().strip()
-            v_raw = (event.get("venue") or {}).get("name", "")
-            v = _norm_venue(v_raw)
-            # Also try stripping last word (often a city name) from venue name
-            v_words = v.split()
-            v_short = " ".join(v_words[:-1]) if len(v_words) > 2 else v
-            if h and v and (f"{h}|{v}" in tm_headliner_venue or f"{h}|{v_short}" in tm_headliner_venue):
-                continue  # TM has this show, skip JamBase duplicate
+            jb_venue = _normalize_venue_name((event.get("venue") or {}).get("name", ""))
+            if h and jb_venue and h in tm_headliner_venues:
+                # Check if any TM venue name for this headliner overlaps with JamBase venue
+                is_dupe = False
+                for tm_venue in tm_headliner_venues[h]:
+                    if (tm_venue in jb_venue or jb_venue in tm_venue or
+                            tm_venue == jb_venue):
+                        is_dupe = True
+                        break
+                if is_dupe:
+                    continue  # TM has this show, skip JamBase duplicate
 
         # Pass 1: exact TM event ID dedup
         sid = event.get("source_id")
