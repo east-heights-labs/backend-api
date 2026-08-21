@@ -3,14 +3,16 @@ OnStage — Events endpoint
 GET /api/v1/events?lat=&lng=&radius=&date=
 
 Returns events near a location for a given date.
-Primary source: Ticketmaster Discovery API.
-Songkick removed — requires paid licensing, not worth it.
+Sources: Ticketmaster (primary) + JamBase (supplement for independent venues).
+Results are merged and deduplicated.
 """
 
+import asyncio
 from fastapi import APIRouter, Query, HTTPException
 from typing import Optional
 from datetime import date as date_type
 from app.services.ticketmaster import ticketmaster_service
+from app.services.jambase import jambase_service
 import logging
 
 logger = logging.getLogger(__name__)
@@ -44,12 +46,14 @@ async def get_events(
         logger.error("TICKETMASTER_API_KEY not configured")
         raise HTTPException(status_code=503, detail="Event service not configured.")
 
-    events = await ticketmaster_service.get_events_near_location(
-        lat=lat,
-        lng=lng,
-        radius_miles=radius,
-        date=date,
+    # Fetch from TM and JamBase in parallel
+    tm_events, jb_events = await asyncio.gather(
+        ticketmaster_service.get_events_near_location(lat=lat, lng=lng, radius_miles=radius, date=date),
+        jambase_service.get_events_near_location(lat=lat, lng=lng, radius_miles=radius, date=date),
     )
+
+    # Merge — TM first (preferred on conflict), JamBase supplements
+    events = tm_events + jb_events
 
     # Deduplicate events.
     # Two passes:
@@ -146,13 +150,17 @@ async def get_events(
 
     unique_events.sort(key=lambda e: (e.get("doors_time") or "99:99:99"))
 
-    logger.info(f"Events: {len(unique_events)} unique ({len(events)} raw) via Ticketmaster near ({lat},{lng}) for {date}")
+    sources = ["ticketmaster"]
+    if jb_events:
+        sources.append("jambase")
+
+    logger.info(f"Events: {len(unique_events)} unique ({len(tm_events)} TM + {len(jb_events)} JamBase) near ({lat},{lng}) for {date}")
 
     return {
         "date": date,
         "location": {"lat": lat, "lng": lng},
         "radius_miles": radius,
-        "sources": ["ticketmaster"],
+        "sources": sources,
         "count": len(unique_events),
         "events": unique_events,
     }
