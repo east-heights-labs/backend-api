@@ -14,9 +14,14 @@ from datetime import date as date_type
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, or_
+from sqlalchemy.sql.expression import func
 
 from app.core.config import settings
+from app.core.database import get_db
+from app.models.venue import Venue
 
 logger = logging.getLogger(__name__)
 
@@ -146,17 +151,46 @@ def _date_window(date_str: Optional[str]) -> tuple[str, str]:
 async def search_venues(
     q: str = Query(..., min_length=2, description="Venue name query"),
     date: Optional[str] = Query(default=None, description="Start date YYYY-MM-DD (defaults to today)"),
+    db: AsyncSession = Depends(get_db),
 ):
     """
-    Search for venues by name across all supported cities.
-    Returns venues that have matching upcoming shows, with their next event info.
+    Two-phase venue search:
+    1. Query our venue DB by name (returns venues even with no upcoming shows)
+    2. Supplement with Ticketmaster for any additional venues not yet in our DB
     Results are deduplicated by venue ID.
-    """
-    if not settings.TICKETMASTER_API_KEY:
-        raise HTTPException(status_code=503, detail="Search service not configured.")
+    """  
+    # --- Phase 1: DB search ---
+    db_results = await db.execute(
+        select(Venue)
+        .where(func.lower(Venue.name).contains(q.lower()))
+        .order_by(Venue.name)
+        .limit(50)
+    )
+    db_venues = db_results.scalars().all()
+    db_venue_ids = {v.id for v in db_venues}
 
+    # Format DB venues (no next_event info at search time — kept fast)
+    venues = [
+        {
+            "venue_id": v.id,
+            "venue_name": v.name,
+            "city": f"{v.city}, {v.state}" if v.state else v.city,
+            "lat": v.lat,
+            "lng": v.lng,
+            "address": v.address,
+            "source": "db",
+            "next_event": None,  # populated on venue detail view
+        }
+        for v in db_venues
+    ]
+
+    # --- Phase 2: TM supplement (only if DB returned fewer than 10 results) ---
+    if len(db_venues) >= 10 or not settings.TICKETMASTER_API_KEY:
+        logger.info(f"Venue search '{q}': {len(venues)} DB results (skipping TM supplement)")
+        return {"query": q, "count": len(venues), "venues": venues}
+    
+    # TM supplement — catch venues not yet in our DB
     start_dt, end_dt = _date_window(date)
-
     async with httpx.AsyncClient(timeout=15.0) as client:
         tasks = [
             _tm_search(client, q, city["lat"], city["lng"], start_dt, end_dt)
@@ -164,45 +198,44 @@ async def search_venues(
         ]
         results = await asyncio.gather(*tasks)
 
-    # Flatten + normalize
-    seen_venue_ids: set[str] = set()
-    venues: list[dict] = []
-
     all_raw = []
     for city, city_events in zip(SUPPORTED_CITIES, results):
         for raw in city_events:
             all_raw.append((city["name"], raw))
 
-    # Sort by date so earliest show wins for each venue
     def event_sort_key(item):
         _, raw = item
         return raw.get("dates", {}).get("start", {}).get("localDate") or "9999-99-99"
-
     all_raw.sort(key=event_sort_key)
 
+    seen_tm_ids: set[str] = set()
     for city_name, raw in all_raw:
         embedded = raw.get("_embedded", {})
         venue_list = embedded.get("venues", [{}])
         venue_raw = venue_list[0] if venue_list else {}
         venue_id = venue_raw.get("id")
-        if not venue_id or venue_id in seen_venue_ids:
+        if not venue_id or venue_id in seen_tm_ids:
             continue
 
-        # Filter: venue name must match query (TM keyword searches events, not venues)
         venue_name = venue_raw.get("name", "").lower()
         if q.lower() not in venue_name:
             continue
 
-        seen_venue_ids.add(venue_id)
+        our_id = f"tm_venue_{venue_id}"
+        if our_id in db_venue_ids:
+            continue  # already returned from DB
+
+        seen_tm_ids.add(venue_id)
         normalized = _normalize_event_slim(raw, city_name)
         if normalized:
             venues.append({
-                "venue_id": f"tm_venue_{venue_id}",
+                "venue_id": our_id,
                 "venue_name": venue_raw.get("name", ""),
                 "city": normalized["venue"]["city"],
                 "lat": normalized["venue"]["lat"],
                 "lng": normalized["venue"]["lng"],
                 "address": normalized["venue"]["address"],
+                "source": "ticketmaster",
                 "next_event": {
                     "title": normalized["title"],
                     "date": normalized["date"],
@@ -213,7 +246,7 @@ async def search_venues(
                 },
             })
 
-    logger.info(f"Venue search '{q}': {len(venues)} results")
+    logger.info(f"Venue search '{q}': {len(venues)} results ({len(db_venues)} DB + {len(seen_tm_ids)} TM)")
     return {"query": q, "count": len(venues), "venues": venues}
 
 
