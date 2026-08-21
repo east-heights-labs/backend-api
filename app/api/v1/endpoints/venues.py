@@ -64,12 +64,14 @@ async def _get_tonight_tm(tm_venue_id: str) -> Optional[dict]:
 @router.get("/{venue_id}")
 async def get_venue(
     venue_id: str = Path(..., description="Venue ID (e.g. tm_venue_KovZ...)"),
-    db: AsyncSession = Depends(get_db),
+    db=Depends(get_db),
 ):
     """
     Return venue detail from our DB, enriched with tonight's show from TM.
-    If venue not in DB, returns 404 with a 'not_found' status.
+    If venue not in DB, or DB not configured, returns 404.
     """
+    if db is None:
+        raise HTTPException(status_code=404, detail={"status": "not_found", "venue_id": venue_id})
     venue: Optional[Venue] = await db.get(Venue, venue_id)
 
     if not venue:

@@ -2,21 +2,38 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
+import logging
 
-# Convert postgresql:// to postgresql+asyncpg://
-db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
-
-engine = create_async_engine(db_url, echo=settings.DEBUG)
-AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
     pass
 
 
-async def get_db() -> AsyncSession:
+# Only wire up the engine if a real DATABASE_URL is configured
+_db_url = (settings.DATABASE_URL or "").replace("postgresql://", "postgresql+asyncpg://")
+_db_ready = bool(_db_url and "localhost" not in _db_url and "user:password" not in _db_url)
+
+if _db_ready:
+    engine = create_async_engine(_db_url, echo=settings.DEBUG)
+    AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+else:
+    logger.warning("DATABASE_URL not configured or is placeholder — DB features disabled")
+    engine = None
+    AsyncSessionLocal = None
+
+
+async def get_db():
+    """Yield a DB session, or None if DB is not configured."""
+    if AsyncSessionLocal is None:
+        yield None
+        return
     async with AsyncSessionLocal() as session:
         try:
             yield session
+        except Exception:
+            await session.rollback()
+            raise
         finally:
             await session.close()

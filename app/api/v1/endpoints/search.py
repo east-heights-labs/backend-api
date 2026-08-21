@@ -151,40 +151,50 @@ def _date_window(date_str: Optional[str]) -> tuple[str, str]:
 async def search_venues(
     q: str = Query(..., min_length=2, description="Venue name query"),
     date: Optional[str] = Query(default=None, description="Start date YYYY-MM-DD (defaults to today)"),
-    db: AsyncSession = Depends(get_db),
+    db: Optional[AsyncSession] = Depends(get_db),
 ):
     """
     Two-phase venue search:
     1. Query our venue DB by name (returns venues even with no upcoming shows)
     2. Supplement with Ticketmaster for any additional venues not yet in our DB
     Results are deduplicated by venue ID.
-    """  
-    # --- Phase 1: DB search ---
-    db_results = await db.execute(
-        select(Venue)
-        .where(func.lower(Venue.name).contains(q.lower()))
-        .order_by(Venue.name)
-        .limit(50)
-    )
-    db_venues = db_results.scalars().all()
-    db_venue_ids = {v.id for v in db_venues}
+    Phase 1 is skipped gracefully if DB is unavailable.
+    """
+    # --- Phase 1: DB search (skipped if DB not available) ---
+    db_venues = []
+    db_venue_ids: set[str] = set()
+    venues: list[dict] = []
 
-    # Format DB venues (no next_event info at search time — kept fast)
-    venues = [
-        {
-            "venue_id": v.id,
-            "venue_name": v.name,
-            "city": f"{v.city}, {v.state}" if v.state else v.city,
-            "lat": v.lat,
-            "lng": v.lng,
-            "address": v.address,
-            "source": "db",
-            "next_event": None,  # populated on venue detail view
-        }
-        for v in db_venues
-    ]
+    if db is not None:
+        try:
+            db_results = await db.execute(
+                select(Venue)
+                .where(func.lower(Venue.name).contains(q.lower()))
+                .order_by(Venue.name)
+                .limit(50)
+            )
+            db_venues = db_results.scalars().all()
+            db_venue_ids = {v.id for v in db_venues}
+            venues = [
+                {
+                    "venue_id": v.id,
+                    "venue_name": v.name,
+                    "city": f"{v.city}, {v.state}" if v.state else v.city,
+                    "lat": v.lat,
+                    "lng": v.lng,
+                    "address": v.address,
+                    "source": "db",
+                    "next_event": None,
+                }
+                for v in db_venues
+            ]
+        except Exception as e:
+            logger.warning(f"DB search unavailable, falling through to TM only: {e}")
+            db_venues = []
+            db_venue_ids = set()
+            venues = []
 
-    # --- Phase 2: TM supplement (only if DB returned fewer than 10 results) ---
+    # --- Phase 2: TM supplement (always runs when DB has < 10 results) ---
     if len(db_venues) >= 10 or not settings.TICKETMASTER_API_KEY:
         logger.info(f"Venue search '{q}': {len(venues)} DB results (skipping TM supplement)")
         return {"query": q, "count": len(venues), "venues": venues}

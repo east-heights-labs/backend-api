@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _require_db(db) -> AsyncSession:
+    """Raise 503 if DB is not available."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    return db
+
+
 # ---------------------------------------------------------------------------
 # Request / Response schemas
 # ---------------------------------------------------------------------------
@@ -57,9 +64,10 @@ class FavoriteVenueResponse(BaseModel):
 @router.get("")
 async def list_favorites(
     user_uuid: str = Query(..., min_length=8, description="Device UUID"),
-    db: AsyncSession = Depends(get_db),
+    db=Depends(get_db),
 ):
     """Return all venues favorited by this user, ordered by most recently favorited."""
+    db = _require_db(db)
     result = await db.execute(
         select(UserVenueFavorite)
         .options(selectinload(UserVenueFavorite.venue))
@@ -97,9 +105,10 @@ async def list_favorites(
 @router.post("", status_code=201)
 async def add_favorite(
     body: FavoriteRequest,
-    db: AsyncSession = Depends(get_db),
+    db=Depends(get_db),
 ):
     """Favorite a venue. Idempotent — returns 200 if already favorited."""
+    db = _require_db(db)
     # Verify venue exists
     venue = await db.get(Venue, body.venue_id)
     if not venue:
@@ -135,9 +144,10 @@ async def add_favorite(
 async def remove_favorite(
     venue_id: str,
     user_uuid: str = Query(..., description="Device UUID"),
-    db: AsyncSession = Depends(get_db),
+    db=Depends(get_db),
 ):
     """Unfavorite a venue. Idempotent — returns 200 even if not favorited."""
+    db = _require_db(db)
     await db.execute(
         delete(UserVenueFavorite).where(
             UserVenueFavorite.user_uuid == user_uuid,
@@ -157,9 +167,10 @@ async def remove_favorite(
 @router.get("/ids")
 async def list_favorite_ids(
     user_uuid: str = Query(..., min_length=8, description="Device UUID"),
-    db: AsyncSession = Depends(get_db),
+    db=Depends(get_db),
 ):
     """Return just the set of venue IDs favorited by this user. Lightweight for sync."""
+    db = _require_db(db)
     result = await db.execute(
         select(UserVenueFavorite.venue_id)
         .where(UserVenueFavorite.user_uuid == user_uuid)
