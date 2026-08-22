@@ -189,6 +189,7 @@ class TicketmasterService:
             "date": event_date,
             "doors_time": event_time,
             "time_tbd": time_tbd,
+            "performer_count": len(attractions),  # used by stage time estimator
             "status": raw.get("dates", {}).get("status", {}).get("code", "onsale"),
             "category": category,
             "genre": genre,

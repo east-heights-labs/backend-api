@@ -13,6 +13,7 @@ from typing import Optional
 from datetime import date as date_type
 from app.services.ticketmaster import ticketmaster_service
 from app.services.jambase import jambase_service
+from app.services.stage_estimator import enrich_event_with_stage_time
 import logging
 
 logger = logging.getLogger(__name__)
@@ -171,6 +172,10 @@ async def get_events(
 
         seen_fingerprints.add(fingerprint)
         unique_events.append(event)
+
+    # Enrich each event with estimated stage time
+    for event in unique_events:
+        enrich_event_with_stage_time(event)
 
     unique_events.sort(key=lambda e: (e.get("doors_time") or "99:99:99"))
 
