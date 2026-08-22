@@ -49,18 +49,16 @@ class TicketmasterService:
             logger.warning("Ticketmaster API key not set — returning empty list")
             return []
 
-        from datetime import date as date_type, timedelta
+        from datetime import date as date_type
         if not date:
             target_date = date_type.today()
         else:
             target_date = date_type.fromisoformat(date)
 
-        # Fetch ±3 days window to catch events TM's date filter misses,
-        # then filter client-side to the exact requested date.
-        window_start = target_date - timedelta(days=1)
-        window_end = target_date + timedelta(days=3)
-        start_dt = f"{window_start.isoformat()}T00:00:00Z"
-        end_dt = f"{window_end.isoformat()}T23:59:59Z"
+        # NOTE: TM's startDateTime/endDateTime filter is unreliable and actively
+        # drops some events (confirmed with Santana, The Amp at Lake Martin, others).
+        # Fix: omit date params entirely, fetch by geo only, filter client-side.
+        # We fetch 3 pages max (600 events) and keep only those matching target date.
         target_str = target_date.isoformat()  # YYYY-MM-DD for client-side filter
 
         all_events: list[dict] = []
@@ -73,11 +71,9 @@ class TicketmasterService:
                     "latlong": f"{lat},{lng}",
                     "radius": str(int(radius_miles)),
                     "unit": "miles",
-                    "startDateTime": start_dt,
-                    "endDateTime": end_dt,
                     "size": 200,
                     "page": page,
-                    "sort": "distance,asc",
+                    "sort": "date,asc",
                 }
 
                 try:
