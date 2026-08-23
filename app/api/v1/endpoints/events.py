@@ -63,6 +63,18 @@ async def get_events(
 
     import re
 
+    def _normalize_artist_name(name: str) -> str:
+        """Normalize artist name for cross-source matching.
+        Strips parentheticals, punctuation, and lowercases.
+        e.g. 'Kandi (Burruss)' -> 'kandi burruss'
+        """
+        name = name.lower().strip()
+        # Replace parenthetical content with a space (keep the text inside)
+        name = re.sub(r'\(([^)]+)\)', r' \1', name)
+        name = re.sub(r'[^a-z0-9\s]', '', name)
+        name = re.sub(r'\s+', ' ', name).strip()
+        return name
+
     def _normalize_venue_name(name: str) -> str:
         """Strip state suffixes and punctuation for fuzzy venue matching."""
         name = name.lower().strip()
@@ -92,10 +104,11 @@ async def get_events(
         # Keep house number + first 2 street tokens: "7620 katy fwy"
         return ' '.join(tokens[:3]).strip()
 
-    # Build TM headliner → normalized venue names index (now that _normalize_venue_name is defined)
+    # Build TM headliner → normalized venue names index
+    # Key: normalized artist name; value: set of normalized venue names
     tm_headliner_venues: dict[str, set[str]] = {}
     for e in tm_events:
-        h = (e.get('headliner') or {}).get('name', '').lower().strip()
+        h = _normalize_artist_name((e.get('headliner') or {}).get('name', ''))
         v = _normalize_venue_name((e.get('venue') or {}).get('name', ''))
         if h and v:
             tm_headliner_venues.setdefault(h, set()).add(v)
@@ -111,7 +124,7 @@ async def get_events(
         # JamBase often lacks time data so we can't match on time — just headliner+venue.
         # Match strategy: JamBase venue name contains or is contained by TM venue name
         if event.get("source") == "jambase":
-            h = (event.get("headliner") or {}).get("name", "").lower().strip()
+            h = _normalize_artist_name((event.get("headliner") or {}).get("name", ""))
             jb_venue = _normalize_venue_name((event.get("venue") or {}).get("name", ""))
             if h and jb_venue and h in tm_headliner_venues:
                 # Check if any TM venue name for this headliner overlaps with JamBase venue
