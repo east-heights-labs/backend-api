@@ -518,3 +518,215 @@ def delete_venue_event(event_id):
         db.commit()
 
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Community reports — fan-submitted stage times, scoped to venue
+# ---------------------------------------------------------------------------
+
+@venue_bp.route("/api/venue/community-reports", methods=["GET"])
+@require_venue_auth
+def list_community_reports():
+    venue_id = g.venue_payload["venue_id"]
+    status_filter = request.args.get("status", "pending")
+
+    db = get_db()
+    with db.cursor() as cur:
+        if status_filter == "all":
+            cur.execute("""
+                SELECT id, artist_name, event_date, stage_time, status, submitted_at, event_id
+                FROM venue_stage_reports
+                WHERE venue_id = %s
+                ORDER BY submitted_at DESC LIMIT 100
+            """, (venue_id,))
+        else:
+            cur.execute("""
+                SELECT id, artist_name, event_date, stage_time, status, submitted_at, event_id
+                FROM venue_stage_reports
+                WHERE venue_id = %s AND status = %s
+                ORDER BY submitted_at DESC LIMIT 100
+            """, (venue_id, status_filter))
+        rows = cur.fetchall()
+
+    reports = [{
+        "id": str(r[0]),
+        "artist_name": r[1],
+        "event_date": r[2].isoformat() if r[2] else None,
+        "stage_time": str(r[3]) if r[3] else None,
+        "status": r[4],
+        "submitted_at": r[5].isoformat() if r[5] else None,
+        "event_id": r[6],
+    } for r in rows]
+
+    return jsonify({"reports": reports, "count": len(reports)})
+
+
+@venue_bp.route("/api/venue/community-reports/<report_id>/confirm", methods=["POST"])
+@require_venue_auth
+def confirm_report(report_id):
+    venue_id = g.venue_payload["venue_id"]
+    account_id = g.venue_payload["sub"]
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT venue_id FROM venue_stage_reports WHERE id = %s", (report_id,))
+        row = cur.fetchone()
+
+    if not row:
+        return jsonify({"error": "Report not found"}), 404
+    if str(row[0]) != venue_id:
+        return jsonify({"error": "Forbidden"}), 403
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            UPDATE venue_stage_reports
+            SET status = 'confirmed', reviewed_by = %s, reviewed_at = NOW()
+            WHERE id = %s
+        """, (account_id, report_id))
+        db.commit()
+
+    return jsonify({"ok": True})
+
+
+@venue_bp.route("/api/venue/community-reports/<report_id>/flag", methods=["POST"])
+@require_venue_auth
+def flag_report(report_id):
+    venue_id = g.venue_payload["venue_id"]
+    account_id = g.venue_payload["sub"]
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT venue_id FROM venue_stage_reports WHERE id = %s", (report_id,))
+        row = cur.fetchone()
+
+    if not row:
+        return jsonify({"error": "Report not found"}), 404
+    if str(row[0]) != venue_id:
+        return jsonify({"error": "Forbidden"}), 403
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("""
+            UPDATE venue_stage_reports
+            SET status = 'flagged', reviewed_by = %s, reviewed_at = NOW()
+            WHERE id = %s
+        """, (account_id, report_id))
+        db.commit()
+
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Followers
+# ---------------------------------------------------------------------------
+
+@venue_bp.route("/api/venue/followers", methods=["GET"])
+@require_venue_auth
+def get_followers():
+    venue_id = g.venue_payload["venue_id"]
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM venue_followers WHERE venue_id = %s", (venue_id,))
+        total = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT DATE(followed_at AT TIME ZONE 'UTC') AS day, COUNT(*)
+            FROM venue_followers
+            WHERE venue_id = %s AND followed_at >= NOW() - INTERVAL '30 days'
+            GROUP BY day ORDER BY day
+        """, (venue_id,))
+        daily_rows = cur.fetchall()
+
+    return jsonify({
+        "total": total,
+        "daily": [{"date": str(r[0]), "count": r[1]} for r in daily_rows],
+    })
+
+
+# ---------------------------------------------------------------------------
+# Public fan-facing: follow / unfollow / submit report
+# ---------------------------------------------------------------------------
+
+@venue_bp.route("/api/venue/<venue_id>/follow", methods=["POST"])
+def fan_follow(venue_id):
+    data = request.get_json() or {}
+    fan_uuid = (data.get("fan_uuid") or "").strip()
+    if not fan_uuid:
+        return jsonify({"error": "fan_uuid required"}), 400
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT id FROM venues WHERE id = %s", (venue_id,))
+        if not cur.fetchone():
+            return jsonify({"error": "Venue not found"}), 404
+        cur.execute("""
+            INSERT INTO venue_followers (venue_id, fan_uuid)
+            VALUES (%s, %s) ON CONFLICT (venue_id, fan_uuid) DO NOTHING
+        """, (venue_id, fan_uuid))
+        db.commit()
+
+    return jsonify({"ok": True, "following": True})
+
+
+@venue_bp.route("/api/venue/<venue_id>/follow", methods=["DELETE"])
+def fan_unfollow(venue_id):
+    data = request.get_json() or {}
+    fan_uuid = (data.get("fan_uuid") or "").strip()
+    if not fan_uuid:
+        return jsonify({"error": "fan_uuid required"}), 400
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "DELETE FROM venue_followers WHERE venue_id = %s AND fan_uuid = %s",
+            (venue_id, fan_uuid)
+        )
+        db.commit()
+
+    return jsonify({"ok": True, "following": False})
+
+
+@venue_bp.route("/api/venue/<venue_id>/stage-report", methods=["POST"])
+def fan_submit_report(venue_id):
+    """Fan-submitted stage time scoped to a venue (replaces legacy /api/stagetime/report for venue-aware submissions)."""
+    import datetime as _dt
+    data = request.get_json() or {}
+    artist_name = (data.get("artist_name") or "").strip()
+    stage_time_str = (data.get("stage_time") or "").strip()
+    event_date = (data.get("event_date") or "").strip()
+    fan_uuid = (data.get("fan_uuid") or "").strip() or None
+    event_id = (data.get("event_id") or "").strip() or None
+
+    if not artist_name or not stage_time_str:
+        return jsonify({"error": "artist_name and stage_time required"}), 400
+
+    try:
+        h, m = int(stage_time_str.split(":")[0]), int(stage_time_str.split(":")[1])
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError
+        stage_time_str = f"{h:02d}:{m:02d}"
+    except (ValueError, IndexError):
+        return jsonify({"error": "stage_time must be HH:MM"}), 400
+
+    parsed_date = None
+    if event_date:
+        try:
+            parsed_date = _dt.date.fromisoformat(event_date)
+        except ValueError:
+            return jsonify({"error": "event_date must be YYYY-MM-DD"}), 400
+
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("SELECT id FROM venues WHERE id = %s", (venue_id,))
+        if not cur.fetchone():
+            return jsonify({"error": "Venue not found"}), 404
+        cur.execute("""
+            INSERT INTO venue_stage_reports
+              (venue_id, event_id, artist_name, event_date, stage_time, fan_uuid)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (venue_id, event_id, artist_name, parsed_date, stage_time_str, fan_uuid))
+        db.commit()
+
+    return jsonify({"ok": True, "message": f"Report submitted for {artist_name}"})
