@@ -31,8 +31,8 @@ JWT_EXPIRY_DAYS = 7
 JWT_REFRESH_THRESHOLD_HOURS = 24   # reissue token if it's been >24h since iat
 
 COOKIE_NAME = "venue_token"
-COOKIE_SECURE = os.environ.get("FLASK_ENV", "production") != "development"
-COOKIE_SAMESITE = "Lax"
+COOKIE_SECURE = True   # always Secure — required for SameSite=None
+COOKIE_SAMESITE = "None"  # cross-origin cookie: dashboard.eastheightslabs.com → ehl-backend-vercel.vercel.app
 
 
 # ---------------------------------------------------------------------------
