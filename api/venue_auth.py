@@ -183,3 +183,4 @@ def generate_invite_token() -> str:
 
 def invite_expiry() -> datetime.datetime:
     return _now() + datetime.timedelta(hours=72)
+# force redeploy Tue Aug 25 15:35:34 CDT 2026
