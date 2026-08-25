@@ -31,7 +31,7 @@ import datetime
 
 from flask import Blueprint, request, jsonify, g, make_response
 
-from .venue_auth import (
+from venue_auth import (
     hash_password,
     verify_password,
     issue_token,
@@ -42,7 +42,7 @@ from .venue_auth import (
     generate_invite_token,
     invite_expiry,
 )
-from .db import get_db
+from db import get_db
 
 venue_bp = Blueprint("venue", __name__)
 

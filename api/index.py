@@ -20,9 +20,15 @@ app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
 # Database + venue routes
+# Vercel runs api/index.py as a top-level module (not a package).
+# Insert the api/ directory into sys.path for absolute sibling imports.
 # ---------------------------------------------------------------------------
-from .db import init_db_pool
-from .venue_routes import venue_bp
+import sys as _sys
+import os as _os
+_sys.path.insert(0, _os.path.dirname(__file__))
+
+from db import init_db_pool
+from venue_routes import venue_bp
 
 init_db_pool(app)
 app.register_blueprint(venue_bp)
@@ -464,7 +470,7 @@ def events():
 
     # Venue-created events from DB
     try:
-        from .db import get_db
+        from db import get_db
         db = get_db()
         with db.cursor() as cur:
             cur.execute("""
