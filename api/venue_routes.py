@@ -254,36 +254,6 @@ def accept_invite():
 # Public: login
 # ---------------------------------------------------------------------------
 
-@venue_bp.route("/api/venue/debug-login", methods=["POST"])
-def venue_debug_login():
-    """Temporary debug endpoint — remove after diagnosis."""
-    import bcrypt as _b
-    data = request.get_json() or {}
-    email = (data.get("email") or "").strip().lower()
-    password = (data.get("password") or "").strip()
-    db = get_db()
-    with db.cursor() as cur:
-        cur.execute("SELECT password_hash, is_active FROM venue_accounts WHERE email = %s", (email,))
-        row = cur.fetchone()
-    if not row:
-        return jsonify({"found": False})
-    stored = row[0]
-    active = row[1]
-    try:
-        match = _b.checkpw(password.encode("utf-8"), stored.encode("utf-8"))
-    except Exception as e:
-        match = f"ERROR: {e}"
-    return jsonify({
-        "found": True,
-        "is_active": active,
-        "hash_prefix": stored[:20] if stored else None,
-        "hash_len": len(stored) if stored else 0,
-        "password_len": len(password),
-        "bcrypt_version": _b.__version__,
-        "match": match,
-    })
-
-
 @venue_bp.route("/api/venue/login", methods=["POST"])
 def venue_login():
     """
