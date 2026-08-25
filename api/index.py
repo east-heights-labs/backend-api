@@ -19,6 +19,20 @@ import math
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
+# CORS — allow dashboard.eastheightslabs.com to call the API with credentials
+# ---------------------------------------------------------------------------
+from flask_cors import CORS
+CORS(app,
+     origins=[
+         "https://dashboard.eastheightslabs.com",
+         "http://localhost:3000",
+         "https://venue-dashboard-*.vercel.app",
+     ],
+     supports_credentials=True,
+     allow_headers=["Content-Type", "Authorization", "X-Admin-Secret"],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+
+# ---------------------------------------------------------------------------
 # Database + venue routes
 # Vercel runs api/index.py as a top-level module (not a package).
 # Insert the api/ directory into sys.path for absolute sibling imports.
