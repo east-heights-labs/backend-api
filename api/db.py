@@ -28,32 +28,41 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 
 def init_db_pool(app):
-    """Initialize connection pool and register teardown. Call once at startup."""
-    global _pool
-    if not DATABASE_URL:
-        app.logger.warning("DATABASE_URL not set — DB features disabled")
-        return
-
-    # minconn=1, maxconn=5 — Vercel functions are short-lived; keep it small
-    _pool = psycopg2.pool.ThreadedConnectionPool(
-        minconn=1,
-        maxconn=5,
-        dsn=DATABASE_URL,
-        sslmode="require",
-        connect_timeout=5,
-    )
-
+    """
+    Register the DB teardown handler.
+    Actual pool creation is deferred to first get_db() call (lazy init).
+    This avoids connection failures during Vercel cold start import.
+    """
     @app.teardown_appcontext
     def close_db(error):
         conn = g.pop("_db_conn", None)
         if conn is not None and _pool is not None:
-            _pool.putconn(conn)
+            try:
+                _pool.putconn(conn)
+            except Exception:
+                pass
+
+
+def _ensure_pool():
+    """Lazy pool creation — called on first DB access, not at import time."""
+    global _pool
+    if _pool is not None:
+        return
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL not set — DB features disabled")
+    # SimpleConnectionPool is fine for serverless (single-threaded per invocation)
+    _pool = psycopg2.pool.SimpleConnectionPool(
+        minconn=1,
+        maxconn=3,
+        dsn=DATABASE_URL,
+        sslmode="require",
+        connect_timeout=8,
+    )
 
 
 def get_db():
     """Return a psycopg2 connection for the current request context."""
-    if _pool is None:
-        raise RuntimeError("Database not configured — DATABASE_URL missing")
+    _ensure_pool()
 
     if "_db_conn" not in g:
         conn = _pool.getconn()
