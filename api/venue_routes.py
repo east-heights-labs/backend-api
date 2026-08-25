@@ -246,8 +246,8 @@ def accept_invite():
         db.commit()
 
     jwt_token = issue_token(str(account_id), str(venue_id), role)
-    resp = make_response(jsonify({"ok": True, "message": "Account activated"}))
-    return set_auth_cookie(resp, jwt_token)
+    resp = make_response(jsonify({"ok": True, "message": "Account activated", "token": jwt_token}))
+    return set_auth_cookie(resp, jwt_token)  # still set cookie for backward compat
 
 
 # ---------------------------------------------------------------------------
@@ -300,8 +300,8 @@ def venue_login():
         db.commit()
 
     jwt_token = issue_token(str(account_id), str(venue_id), role)
-    resp = make_response(jsonify({"ok": True}))
-    return set_auth_cookie(resp, jwt_token)
+    resp = make_response(jsonify({"ok": True, "token": jwt_token}))
+    return set_auth_cookie(resp, jwt_token)  # still set cookie for backward compat
 
 
 # ---------------------------------------------------------------------------
