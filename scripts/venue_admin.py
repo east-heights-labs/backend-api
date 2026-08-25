@@ -84,7 +84,7 @@ def cmd_invite(venue_id: str, email: str):
         """, (venue_id, email, token, expires))
         conn.commit()
 
-    invite_url = f"{DASHBOARD_BASE_URL}/venue/accept-invite?token={token}"
+    invite_url = f"{DASHBOARD_BASE_URL}/accept-invite?token={token}"
     print(f"\n✅ Invite created")
     print(f"   Venue:      {venue[1]}")
     print(f"   Email:      {email}")
@@ -161,7 +161,7 @@ def cmd_reinvite(account_id: str, email: str):
         print(f"ERROR: No account with id {account_id}")
         sys.exit(1)
 
-    invite_url = f"{DASHBOARD_BASE_URL}/venue/accept-invite?token={token}"
+    invite_url = f"{DASHBOARD_BASE_URL}/accept-invite?token={token}"
     print(f"\n✅ Re-invite created")
     print(f"   Email:      {email}")
     print(f"   Expires:    {expires.strftime('%Y-%m-%d %H:%M UTC')}")

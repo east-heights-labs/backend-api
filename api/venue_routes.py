@@ -115,7 +115,7 @@ def admin_create_invite():
         db.commit()
 
     base_url = os.environ.get("DASHBOARD_BASE_URL", "https://dashboard.eastheightslabs.com")
-    invite_url = f"{base_url}/venue/accept-invite?token={token}"
+    invite_url = f"{base_url}/accept-invite?token={token}"
 
     return jsonify({
         "ok": True,
