@@ -1,3 +1,9 @@
+# =============================================================================
+# NOT DEPLOYED — FastAPI skeleton for future WUTBT platform backend.
+# The live backend served by Vercel is api/index.py (Flask).
+# Do NOT mount this file in vercel.json or api/index.py.
+# Remove this comment block only when this replaces the Flask app.
+# =============================================================================
 """
 East Heights Labs — Shared Backend API
 Serves both Live Near Me and What Used To Be There (WUTBT)

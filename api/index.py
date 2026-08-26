@@ -416,32 +416,48 @@ def normalize_tm_event(raw, user_lat, user_lng):
     }
 
 
-import json as _json_mod
-import os as _os_mod
-from pathlib import Path as _Path
-
-# --- Stage time report storage ---
-# Stored in /tmp (Vercel ephemeral) — good enough for alpha, move to DB before scale
-REPORTS_FILE = _Path('/tmp/stagetime_reports.json')
-
-def _load_reports() -> list:
-    try:
-        if REPORTS_FILE.exists():
-            return _json_mod.loads(REPORTS_FILE.read_text())
-    except Exception:
-        pass
-    return []
-
-def _save_reports(reports: list):
-    try:
-        REPORTS_FILE.write_text(_json_mod.dumps(reports))
-    except Exception:
-        pass
+# --- Stage time report storage (Postgres — persistent across Vercel cold starts) ---
+# Written to fan_stagetime_reports table via migration 004.
+# Legacy /tmp storage removed 2026-08-26.
 
 def _get_reports_for_artist(artist_name: str) -> list:
-    reports = _load_reports()
+    """Fetch fan-submitted stage time reports for an artist from Postgres."""
     key = artist_name.lower().strip()
-    return [r for r in reports if r.get('artist_name','').lower() == key]
+    try:
+        from db import get_db
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute("""
+                SELECT artist_name, venue_name, city,
+                       event_date, stage_time
+                FROM fan_stagetime_reports
+                WHERE lower(artist_name) = %s
+                ORDER BY submitted_at DESC
+                LIMIT 50
+            """, (key,))
+            rows = cur.fetchall()
+        results = []
+        for r in rows:
+            stage_time_str = str(r[4])[:5] if r[4] else None  # 'HH:MM'
+            if not stage_time_str:
+                continue
+            try:
+                h, m = int(stage_time_str.split(':')[0]), int(stage_time_str.split(':')[1])
+            except (ValueError, IndexError):
+                continue
+            results.append({
+                'artist_name': r[0],
+                'venue_name': r[1],
+                'city': r[2],
+                'date': r[3].isoformat() if r[3] else '',
+                'stage_time': stage_time_str,
+                'stage_minutes': h * 60 + m,
+                'source': 'fan',
+            })
+        return results
+    except Exception as exc:
+        app.logger.warning(f'_get_reports_for_artist DB error: {exc}')
+        return []
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -801,15 +817,21 @@ def stagetime():
 def submit_stagetime_report():
     """
     Fan-submitted stage time report.
-    POST body: { artist_name, venue_name, city, date, stage_time (HH:MM) }
+    POST body: { artist_name, venue_name, city, date, stage_time (HH:MM), fan_uuid (optional) }
+
+    Writes to fan_stagetime_reports table in Postgres (migration 004).
+    Previously wrote to /tmp/stagetime_reports.json — removed 2026-08-26 because
+    Vercel wipes /tmp on every cold start, silently losing all submissions.
     """
+    import datetime as _dt
     data = request.get_json() or {}
 
     artist_name = (data.get("artist_name") or "").strip()
-    venue_name = (data.get("venue_name") or "").strip()
-    city = (data.get("city") or "").strip()
-    date = (data.get("date") or "").strip()
+    venue_name = (data.get("venue_name") or "").strip() or None
+    city = (data.get("city") or "").strip() or None
+    date_str = (data.get("date") or "").strip() or None
     stage_time = (data.get("stage_time") or "").strip()
+    fan_uuid = (data.get("fan_uuid") or "").strip() or None
 
     if not artist_name or not stage_time:
         return jsonify({"error": "artist_name and stage_time required"}), 400
@@ -824,20 +846,27 @@ def submit_stagetime_report():
     except (ValueError, IndexError):
         return jsonify({"error": "stage_time must be HH:MM format"}), 400
 
-    report = {
-        "artist_name": artist_name,
-        "venue_name": venue_name,
-        "city": city,
-        "date": date,
-        "stage_time": stage_time,
-        "stage_minutes": hour * 60 + minute,
-        "source": "fan",
-        "submitted_at": __import__("datetime").datetime.utcnow().isoformat(),
-    }
+    # Parse optional date
+    parsed_date = None
+    if date_str:
+        try:
+            parsed_date = _dt.date.fromisoformat(date_str)
+        except ValueError:
+            return jsonify({"error": "date must be YYYY-MM-DD format"}), 400
 
-    reports = _load_reports()
-    reports.append(report)
-    _save_reports(reports)
+    try:
+        from db import get_db
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute("""
+                INSERT INTO fan_stagetime_reports
+                  (artist_name, venue_name, city, event_date, stage_time, fan_uuid)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (artist_name, venue_name, city, parsed_date, stage_time, fan_uuid))
+            db.commit()
+    except Exception as exc:
+        app.logger.error(f"submit_stagetime_report DB error: {exc}")
+        return jsonify({"error": "Failed to save report"}), 500
 
     return jsonify({"ok": True, "message": f"Stage time reported for {artist_name}"})
 
