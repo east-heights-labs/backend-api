@@ -626,7 +626,7 @@ def events():
         db = get_db()
         with db.cursor() as cur:
             cur.execute("""
-                SELECT event_id, artist_name, stage_time, doors_time
+                SELECT event_id, artist_name, stage_time
                 FROM venue_stage_reports
                 WHERE event_date = %s
                   AND status IN ('pending', 'confirmed')
@@ -634,37 +634,30 @@ def events():
             """, (req_date,))
             report_rows = cur.fetchall()
 
-        # Build lookup: event_id -> report, and artist_name -> report (fallback)
+        # Build lookup: event_id -> stage_time, and artist_name -> stage_time (fallback)
         reports_by_event_id = {}
         reports_by_artist = {}
         for row in report_rows:
-            eid, aname, stime, dtime = row
+            eid, aname, stime = row
             stage_str = str(stime)[:5] if stime else None
-            doors_str = str(dtime)[:5] if dtime else None
+            if not stage_str:
+                continue
             if eid and eid not in reports_by_event_id:
-                reports_by_event_id[eid] = (stage_str, doors_str)
+                reports_by_event_id[eid] = stage_str
             if aname:
                 key = aname.lower().strip()
                 if key not in reports_by_artist:
-                    reports_by_artist[key] = (stage_str, doors_str)
+                    reports_by_artist[key] = stage_str
 
         for e in event_list:
-            report = reports_by_event_id.get(e.get("id")) or \
-                     reports_by_artist.get((e.get("headliner") or {}).get("name", "").lower().strip())
-            if report:
-                stage_str, doors_str = report
-                if stage_str:
-                    e["stage_time"] = stage_str
-                    e["estimated_stage_time"] = stage_str
-                    e["stage_time_source"] = "venue_confirmed"
-                if doors_str and not e.get("doors_time"):
-                    e["doors_time"] = doors_str
+            stage_str = reports_by_event_id.get(e.get("id")) or \
+                        reports_by_artist.get((e.get("headliner") or {}).get("name", "").lower().strip())
+            if stage_str:
+                e["stage_time"] = stage_str
+                e["estimated_stage_time"] = stage_str
+                e["stage_time_source"] = "venue_confirmed"
     except Exception as _sr:
-        import traceback
-        app.logger.error(f"Stage report overlay FAILED: {_sr}\n{traceback.format_exc()}")
-        overlay_error = str(_sr)
-    else:
-        overlay_error = None
+        app.logger.error(f"Stage report overlay failed: {_sr}")
 
     # Sort by start time
     event_list.sort(key=lambda e: e.get("doors_time") or "99:99:99")
@@ -676,7 +669,6 @@ def events():
         "count": len(event_list),
         "sources": sources_used,
         "events": event_list,
-        "_debug_overlay_error": overlay_error,
     })
 
 
