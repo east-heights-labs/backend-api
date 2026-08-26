@@ -660,7 +660,11 @@ def events():
                 if doors_str and not e.get("doors_time"):
                     e["doors_time"] = doors_str
     except Exception as _sr:
-        app.logger.warning(f"Stage report overlay skipped: {_sr}")
+        import traceback
+        app.logger.error(f"Stage report overlay FAILED: {_sr}\n{traceback.format_exc()}")
+        overlay_error = str(_sr)
+    else:
+        overlay_error = None
 
     # Sort by start time
     event_list.sort(key=lambda e: e.get("doors_time") or "99:99:99")
@@ -672,6 +676,7 @@ def events():
         "count": len(event_list),
         "sources": sources_used,
         "events": event_list,
+        "_debug_overlay_error": overlay_error,
     })
 
 
