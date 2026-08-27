@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     EVENTBRITE_API_KEY: str = ""
     JAMBASE_API_KEY: str = ""
 
+    # Pre-fetch cron job
+    PREFETCH_SECRET: str = ""  # Set in Vercel env; cron requests must include x-prefetch-secret header
+
     # Google
     GOOGLE_MAPS_API_KEY: str = ""
     GOOGLE_STREET_VIEW_API_KEY: str = ""

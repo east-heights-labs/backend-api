@@ -14,6 +14,7 @@ from datetime import date as date_type
 from app.services.ticketmaster import ticketmaster_service
 from app.services.jambase import jambase_service
 from app.services.stage_estimator import enrich_event_with_stage_time
+from app.services.event_cache import get_cached_events, set_cached_events
 import logging
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,20 @@ async def get_events(
         logger.error("TICKETMASTER_API_KEY not configured")
         raise HTTPException(status_code=503, detail="Event service not configured.")
 
-    # Fetch from TM and JamBase in parallel
+    # --- Cache check ---
+    cached = await get_cached_events(lat=lat, lng=lng, radius=radius, date=date)
+    if cached is not None:
+        return {
+            "date": date,
+            "location": {"lat": lat, "lng": lng},
+            "radius_miles": radius,
+            "sources": ["cache"],
+            "cached": True,
+            "count": len(cached),
+            "events": cached,
+        }
+
+    # --- Cache miss: fetch live from TM and JamBase in parallel ---
     tm_events, jb_events = await asyncio.gather(
         ticketmaster_service.get_events_near_location(lat=lat, lng=lng, radius_miles=radius, date=date),
         jambase_service.get_events_near_location(lat=lat, lng=lng, radius_miles=radius, date=date),
@@ -198,11 +212,18 @@ async def get_events(
 
     logger.info(f"Events: {len(unique_events)} unique ({len(tm_events)} TM + {len(jb_events)} JamBase) near ({lat},{lng}) for {date}")
 
+    # --- Write to cache (non-blocking, don't fail the response if cache write fails) ---
+    try:
+        await set_cached_events(lat=lat, lng=lng, radius=radius, date=date, events=unique_events)
+    except Exception as cache_err:
+        logger.warning(f"Cache write failed (non-fatal): {cache_err}")
+
     return {
         "date": date,
         "location": {"lat": lat, "lng": lng},
         "radius_miles": radius,
         "sources": sources,
+        "cached": False,
         "count": len(unique_events),
         "events": unique_events,
     }

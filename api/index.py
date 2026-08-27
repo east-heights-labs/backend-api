@@ -52,6 +52,71 @@ SETLIST_FM_KEY = os.environ.get("SETLIST_FM_API_KEY", "")
 JAMBASE_KEY = os.environ.get("JAMBASE_API_KEY", "")
 
 # ---------------------------------------------------------------------------
+# Upstash Redis cache — REST API, no redis client needed
+# REDIS_URL format: rediss://default:<token>@<host>:6379
+# We parse it to build the REST base URL and bearer token.
+# ---------------------------------------------------------------------------
+_REDIS_URL = os.environ.get("REDIS_URL", "")
+_UPSTASH_BASE = ""
+_UPSTASH_TOKEN = ""
+
+if _REDIS_URL.startswith("rediss://"):
+    # rediss://default:<token>@<host>:6379
+    try:
+        _without_scheme = _REDIS_URL[len("rediss://"):]
+        _creds, _hostport = _without_scheme.rsplit("@", 1)
+        _token = _creds.split(":", 1)[1]  # after "default:"
+        _host = _hostport.split(":")[0]   # strip :6379
+        _UPSTASH_BASE = f"https://{_host}"
+        _UPSTASH_TOKEN = _token
+    except Exception:
+        pass
+
+EVENT_CACHE_TTL = 8 * 3600  # 8 hours in seconds
+RADIUS_BUCKETS = [5, 10, 25]
+
+def _bucket_radius(radius: float) -> int:
+    """Snap radius to nearest standard bucket for cache key consistency."""
+    return min(RADIUS_BUCKETS, key=lambda b: abs(b - radius))
+
+def _cache_key(lat: float, lng: float, radius: float, date: str) -> str:
+    return f"events:{round(lat, 2)}:{round(lng, 2)}:{_bucket_radius(radius)}:{date}"
+
+def _cache_get(key: str):
+    """GET from Upstash REST API. Returns parsed value or None."""
+    if not _UPSTASH_BASE:
+        return None
+    try:
+        url = f"{_UPSTASH_BASE}/get/{key}"
+        req = URLRequest(url, headers={"Authorization": f"Bearer {_UPSTASH_TOKEN}"})
+        with urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read())
+            raw = data.get("result")
+            return json.loads(raw) if raw else None
+    except Exception as e:
+        app.logger.debug(f"Cache GET failed for {key}: {e}")
+        return None
+
+def _cache_set(key: str, value, ttl: int = EVENT_CACHE_TTL):
+    """SET with EX in Upstash REST API. Fire-and-forget."""
+    if not _UPSTASH_BASE:
+        return
+    try:
+        payload = json.dumps(["SET", key, json.dumps(value), "EX", ttl]).encode()
+        req = URLRequest(
+            _UPSTASH_BASE,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {_UPSTASH_TOKEN}",
+                "Content-Type": "application/json",
+            }
+        )
+        with urlopen(req, timeout=3):
+            pass
+    except Exception as e:
+        app.logger.debug(f"Cache SET failed for {key}: {e}")
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -484,6 +549,22 @@ def events():
     except (ValueError, TypeError):
         return jsonify({"error": "Invalid parameters"}), 400
 
+    # --- Cache check ---
+    cache_key = _cache_key(lat, lng, radius, req_date)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        app.logger.info(f"Cache HIT: {cache_key} ({len(cached)} events)")
+        return jsonify({
+            "date": req_date,
+            "location": {"lat": lat, "lng": lng},
+            "radius_miles": radius,
+            "count": len(cached),
+            "sources": ["cache"],
+            "cached": True,
+            "events": cached,
+        })
+
+    # --- Cache miss: fetch live ---
     # Fetch from all available sources in parallel (sequential here — Vercel serverless)
     all_raw = []
     sources_used = []
@@ -662,13 +743,134 @@ def events():
     # Sort by start time
     event_list.sort(key=lambda e: e.get("doors_time") or "99:99:99")
 
+    # Write to cache (non-blocking — skip if no Redis configured)
+    _cache_set(cache_key, event_list)
+
     return jsonify({
         "date": req_date,
         "location": {"lat": lat, "lng": lng},
         "radius_miles": radius,
         "count": len(event_list),
         "sources": sources_used,
+        "cached": False,
         "events": event_list,
+    })
+
+
+# ---------------------------------------------------------------------------
+# /api/prefetch — Vercel cron job (3x/day) populates event cache for all cities
+# ---------------------------------------------------------------------------
+
+PREFETCH_SECRET = os.environ.get("PREFETCH_SECRET", "")
+
+# Cities to pre-fetch — matches JamBase METRO_MAP
+PREFETCH_CITIES = [
+    ("houston",    29.76,  -95.37),
+    ("austin",     30.27,  -97.74),
+    ("dallas",     32.78,  -96.80),
+    ("nashville",  36.16,  -86.78),
+    ("neworleans", 29.95,  -90.07),
+    ("atlanta",    33.75,  -84.39),
+    ("chicago",    41.88,  -87.63),
+    ("newyork",    40.71,  -74.01),
+    ("losangeles", 34.05,  -118.24),
+    ("denver",     39.74,  -104.99),
+    ("seattle",    47.61,  -122.33),
+    ("miami",      25.76,  -80.19),
+]
+PREFETCH_RADIUS = 10.0
+
+
+def _prefetch_city_date(city_label, lat, lng, date_str):
+    """Fetch + cache events for one city on one date. Returns a result dict."""
+    try:
+        tm_events = fetch_ticketmaster_events(lat, lng, PREFETCH_RADIUS, date_str) if TICKETMASTER_KEY else []
+        jb_events = fetch_jambase_events(lat, lng, PREFETCH_RADIUS, date_str) if JAMBASE_KEY else []
+
+        all_raw = tm_events + jb_events
+        source_priority = {"ticketmaster": 0, "jambase": 1}
+        all_raw.sort(key=lambda e: source_priority.get(e.get("source", ""), 9))
+
+        def _nv(name):
+            n = (name or "").lower().strip()
+            n = n.replace("\u2019", "").replace("\u2018", "").replace("'", "")
+            for s in [" - tx", " - ca", " - ny", " - fl", " - il", " - wa", " - co",
+                      " atx", " htx", " nyc", " la", " chi"]:
+                if n.endswith(s): n = n[:-len(s)].strip()
+            for city_sfx in [" houston", " austin", " dallas", " nashville", " chicago",
+                             " new york", " los angeles", " denver", " seattle"]:
+                if n.endswith(city_sfx): n = n[:-len(city_sfx)].strip()
+            return n.replace(".", "").replace("-", " ")
+
+        def _na(name):
+            n = (name or "").lower().strip()
+            return n.replace("\u2019", "").replace("\u2018", "").replace("'", "").replace(".", "").replace("-", " ")
+
+        seen = {}
+        for e in all_raw:
+            artist = _na((e.get("headliner") or {}).get("name", ""))
+            venue = _nv((e.get("venue") or {}).get("name", ""))
+            ak = f"artist|{artist}|{date_str}" if artist else None
+            vk = f"venue|{venue}|{date_str}" if venue else None
+            if (ak and ak in seen) or (vk and vk in seen):
+                continue
+            if ak: seen[ak] = e
+            if vk: seen[vk] = e
+
+        unique = {}
+        for e in seen.values():
+            eid = e.get("id", id(e))
+            if eid not in unique:
+                unique[eid] = e
+        merged = sorted(unique.values(), key=lambda e: e.get("doors_time") or "99:99:99")
+
+        key = _cache_key(lat, lng, PREFETCH_RADIUS, date_str)
+        _cache_set(key, list(merged))
+
+        return {"city": city_label, "date": date_str, "status": "ok",
+                "events": len(merged), "tm": len(tm_events), "jb": len(jb_events)}
+    except Exception as ex:
+        app.logger.error(f"Prefetch error {city_label}/{date_str}: {ex}")
+        return {"city": city_label, "date": date_str, "status": "error", "error": str(ex)}
+
+
+@app.route("/api/prefetch", methods=["POST"])
+def prefetch():
+    """
+    Pre-fetch event cache for all 12 cities, today + tomorrow.
+    Auth: Vercel cron sets x-vercel-cron=1; manual callers need x-prefetch-secret.
+    """
+    is_vercel_cron = request.headers.get("x-vercel-cron") == "1"
+    secret_ok = not PREFETCH_SECRET or request.headers.get("x-prefetch-secret") == PREFETCH_SECRET
+    if not is_vercel_cron and not secret_ok:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    if not _UPSTASH_BASE:
+        return jsonify({"error": "Redis not configured"}), 503
+
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    tomorrow = (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
+    dates = [today, tomorrow]
+
+    results = []
+    for city_label, lat, lng in PREFETCH_CITIES:
+        for d in dates:
+            results.append(_prefetch_city_date(city_label, lat, lng, d))
+
+    ok = [r for r in results if r.get("status") == "ok"]
+    errors = [r for r in results if r.get("status") == "error"]
+    total_events = sum(r.get("events", 0) for r in ok)
+
+    app.logger.info(f"Prefetch complete: {len(ok)}/{len(results)} ok, {total_events} events cached")
+    return jsonify({
+        "status": "complete",
+        "dates": dates,
+        "city_date_pairs": len(results),
+        "successful": len(ok),
+        "errors": len(errors),
+        "total_events_cached": total_events,
+        "results": results,
     })
 
 
