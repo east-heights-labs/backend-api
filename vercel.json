@@ -16,10 +16,6 @@
     {
       "path": "/api/prefetch",
       "schedule": "0 13 * * *"
-    },
-    {
-      "path": "/api/prefetch",
-      "schedule": "0 19 * * *"
     }
   ]
 }
