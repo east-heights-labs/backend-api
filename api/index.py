@@ -874,6 +874,220 @@ def prefetch():
     })
 
 
+# ---------------------------------------------------------------------------
+# /api/search/venues and /api/search/artists
+# ---------------------------------------------------------------------------
+
+SEARCH_CITIES = [
+    {"id": "houston",    "name": "Houston",     "lat": 29.7604,  "lng": -95.3698},
+    {"id": "austin",     "name": "Austin",      "lat": 30.2672,  "lng": -97.7431},
+    {"id": "dallas",     "name": "Dallas",      "lat": 32.7767,  "lng": -96.7970},
+    {"id": "nashville",  "name": "Nashville",   "lat": 36.1627,  "lng": -86.7816},
+    {"id": "neworleans", "name": "New Orleans", "lat": 29.9511,  "lng": -90.0715},
+    {"id": "atlanta",    "name": "Atlanta",     "lat": 33.7490,  "lng": -84.3880},
+    {"id": "chicago",    "name": "Chicago",     "lat": 41.8781,  "lng": -87.6298},
+    {"id": "newyork",    "name": "New York",    "lat": 40.7128,  "lng": -74.0060},
+    {"id": "losangeles", "name": "Los Angeles", "lat": 34.0522,  "lng": -118.2437},
+    {"id": "denver",     "name": "Denver",      "lat": 39.7392,  "lng": -104.9903},
+    {"id": "seattle",    "name": "Seattle",     "lat": 47.6062,  "lng": -122.3321},
+    {"id": "miami",      "name": "Miami",       "lat": 25.7617,  "lng": -80.1918},
+]
+
+
+def _tm_keyword_search(keyword, lat, lng, start_dt, end_dt):
+    """Search TM events by keyword near a lat/lng."""
+    if not TICKETMASTER_KEY:
+        return []
+    params = {
+        "apikey": TICKETMASTER_KEY,
+        "keyword": keyword,
+        "latlong": f"{lat},{lng}",
+        "radius": "30",
+        "unit": "miles",
+        "startDateTime": start_dt,
+        "endDateTime": end_dt,
+        "size": "50",
+        "sort": "date,asc",
+    }
+    url = "https://app.ticketmaster.com/discovery/v2/events.json?" + urlencode(params)
+    try:
+        req = URLRequest(url, headers={"Accept": "application/json"})
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            return data.get("_embedded", {}).get("events", [])
+    except Exception as ex:
+        app.logger.warning(f"TM keyword search error ({lat},{lng}): {ex}")
+        return []
+
+
+def _search_date_window(date_str=None):
+    import datetime as _dt
+    start = _dt.date.fromisoformat(date_str) if date_str else _dt.date.today()
+    end = start + _dt.timedelta(days=30)
+    return f"{start.isoformat()}T00:00:00Z", f"{end.isoformat()}T23:59:59Z"
+
+
+@app.route("/api/search/venues")
+def search_venues():
+    """Search venues by name — DB first, then TM supplement."""
+    q = request.args.get("q", "").strip()
+    if len(q) < 2:
+        return jsonify({"query": q, "count": 0, "venues": []})
+
+    date_str = request.args.get("date")
+    start_dt, end_dt = _search_date_window(date_str)
+    venues = []
+    seen_ids = set()
+
+    # Phase 1: DB search
+    try:
+        from db import get_db
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT id, name, city, state, lat, lng, address FROM venues "
+                "WHERE lower(name) LIKE %s ORDER BY length(name) LIMIT 50",
+                (f"%{q.lower()}%",)
+            )
+            rows = cur.fetchall()
+            for row in rows:
+                vid, vname, city, state, lat, lng, address = row
+                city_display = f"{city}, {state}" if state else city
+                venues.append({
+                    "venue_id": vid,
+                    "venue_name": vname,
+                    "city": city_display,
+                    "lat": float(lat) if lat else 0,
+                    "lng": float(lng) if lng else 0,
+                    "address": address,
+                    "next_event": None,
+                })
+                seen_ids.add(vid)
+    except Exception as ex:
+        app.logger.warning(f"Venue search DB error: {ex}")
+
+    # Phase 2: TM supplement if fewer than 10 DB results
+    if len(venues) < 10 and TICKETMASTER_KEY:
+        all_raw = []
+        for city in SEARCH_CITIES:
+            events = _tm_keyword_search(q, city["lat"], city["lng"], start_dt, end_dt)
+            for raw in events:
+                all_raw.append((city["name"], raw))
+
+        seen_tm = set()
+        for city_name, raw in all_raw:
+            embedded = raw.get("_embedded", {})
+            venue_list = embedded.get("venues", [{}])
+            venue_raw = venue_list[0] if venue_list else {}
+            venue_id = venue_raw.get("id")
+            if not venue_id or venue_id in seen_tm:
+                continue
+            if q.lower() not in venue_raw.get("name", "").lower():
+                continue
+            our_id = f"tm_venue_{venue_id}"
+            if our_id in seen_ids:
+                continue
+            seen_tm.add(venue_id)
+            location = venue_raw.get("location", {})
+            try:
+                lat = float(location.get("latitude", 0))
+                lng = float(location.get("longitude", 0))
+            except (ValueError, TypeError):
+                continue
+            city = venue_raw.get("city", {}).get("name", "")
+            state = venue_raw.get("state", {}).get("stateCode", "")
+            attractions = embedded.get("attractions", [])
+            headliner = attractions[0].get("name", raw.get("name", "")) if attractions else raw.get("name", "")
+            dates = raw.get("dates", {}).get("start", {})
+            venues.append({
+                "venue_id": our_id,
+                "venue_name": venue_raw.get("name", ""),
+                "city": f"{city}, {state}" if state else city,
+                "lat": lat,
+                "lng": lng,
+                "address": venue_raw.get("address", {}).get("line1"),
+                "next_event": {
+                    "title": raw.get("name", ""),
+                    "date": dates.get("localDate"),
+                    "doors_time": dates.get("localTime"),
+                    "headliner": headliner,
+                    "ticket_url": raw.get("url"),
+                    "event_id": f"tm_{raw.get('id')}",
+                },
+            })
+            seen_ids.add(our_id)
+
+    return jsonify({"query": q, "count": len(venues), "venues": venues})
+
+
+@app.route("/api/search/artists")
+def search_artists_route():
+    """Search for an artist's upcoming shows across all supported cities."""
+    q = request.args.get("q", "").strip()
+    if len(q) < 2:
+        return jsonify({"query": q, "count": 0, "shows": []})
+
+    date_str = request.args.get("date")
+    start_dt, end_dt = _search_date_window(date_str)
+
+    all_raw = []
+    for city in SEARCH_CITIES:
+        events = _tm_keyword_search(q, city["lat"], city["lng"], start_dt, end_dt)
+        for raw in events:
+            all_raw.append((city["name"], raw))
+
+    seen_ids = set()
+    shows = []
+    for city_name, raw in all_raw:
+        event_id = raw.get("id")
+        if not event_id or event_id in seen_ids:
+            continue
+        seen_ids.add(event_id)
+
+        classifications = raw.get("classifications", [{}])
+        segment = classifications[0].get("segment", {}).get("name", "").lower() if classifications else ""
+        if segment != "music":
+            continue
+
+        embedded = raw.get("_embedded", {})
+        venues_list = embedded.get("venues", [{}])
+        venue_raw = venues_list[0] if venues_list else {}
+        location = venue_raw.get("location", {})
+        try:
+            lat = float(location.get("latitude", 0))
+            lng = float(location.get("longitude", 0))
+        except (ValueError, TypeError):
+            continue
+
+        attractions = embedded.get("attractions", [])
+        headliner = attractions[0].get("name", raw.get("name", "")) if attractions else raw.get("name", "")
+        dates = raw.get("dates", {}).get("start", {})
+        city = venue_raw.get("city", {}).get("name", "")
+        state = venue_raw.get("state", {}).get("stateCode", "")
+
+        shows.append({
+            "event_id": f"tm_{event_id}",
+            "title": raw.get("name", ""),
+            "headliner": headliner,
+            "date": dates.get("localDate"),
+            "doors_time": dates.get("localTime"),
+            "time_tbd": dates.get("timeTBA", False),
+            "ticket_url": raw.get("url"),
+            "venue": {
+                "id": f"tm_venue_{venue_raw.get('id')}",
+                "name": venue_raw.get("name", ""),
+                "lat": lat,
+                "lng": lng,
+                "city": f"{city}, {state}" if state else city,
+                "address": venue_raw.get("address", {}).get("line1"),
+            },
+            "city_name": city_name,
+        })
+
+    shows.sort(key=lambda s: s.get("date") or "9999-99-99")
+    return jsonify({"query": q, "count": len(shows), "shows": shows})
+
+
 @app.route("/api/stagetime")
 def stagetime():
     """
