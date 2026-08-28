@@ -945,6 +945,14 @@ def search_venues():
     if len(q) < 2:
         return jsonify({"query": q, "count": 0, "venues": []})
 
+    # Strip leading articles so "The Ryman" matches "Ryman Auditorium"
+    _articles = ("the ", "a ", "an ")
+    q_search = q.lower()
+    for _art in _articles:
+        if q_search.startswith(_art):
+            q_search = q_search[len(_art):]
+            break
+
     date_str = request.args.get("date")
     start_dt, end_dt = _search_date_window(date_str)
     venues = []
@@ -958,7 +966,7 @@ def search_venues():
             cur.execute(
                 "SELECT id, name, city, state, lat, lng, address FROM venues "
                 "WHERE lower(name) LIKE %s ORDER BY length(name) LIMIT 50",
-                (f"%{q.lower()}%",)
+                (f"%{q_search}%",)
             )
             rows = cur.fetchall()
             for row in rows:
@@ -993,7 +1001,7 @@ def search_venues():
             venue_id = venue_raw.get("id")
             if not venue_id or venue_id in seen_tm:
                 continue
-            if q.lower() not in venue_raw.get("name", "").lower():
+            if q_search not in venue_raw.get("name", "").lower():
                 continue
             our_id = f"tm_venue_{venue_id}"
             if our_id in seen_ids:
