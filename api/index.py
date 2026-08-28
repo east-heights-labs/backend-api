@@ -834,11 +834,12 @@ def _prefetch_city_date(city_label, lat, lng, date_str):
         return {"city": city_label, "date": date_str, "status": "error", "error": str(ex)}
 
 
-@app.route("/api/prefetch", methods=["POST"])
+@app.route("/api/prefetch", methods=["GET", "POST"])
 def prefetch():
     """
     Pre-fetch event cache for all 12 cities, today + tomorrow.
-    Auth: Vercel cron sets x-vercel-cron=1; manual callers need x-prefetch-secret.
+    Auth: Vercel cron sends GET with x-vercel-cron=1 header; manual callers may POST with x-prefetch-secret.
+    Both GET and POST are accepted so Vercel's cron scheduler doesn't get a 405.
     """
     is_vercel_cron = request.headers.get("x-vercel-cron") == "1"
     secret_ok = not PREFETCH_SECRET or request.headers.get("x-prefetch-secret") == PREFETCH_SECRET
@@ -1326,6 +1327,207 @@ def submit_stagetime_report():
         return jsonify({"error": "Failed to save report"}), 500
 
     return jsonify({"ok": True, "message": f"Stage time reported for {artist_name}"})
+
+
+# ---------------------------------------------------------------------------
+# /api/favorites — venue favorites (anonymous, keyed by device UUID)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/favorites/ids")
+def get_favorite_ids():
+    """Return venue IDs this user has favorited (lightweight sync check)."""
+    user_uuid = request.args.get("user_uuid", "").strip()
+    if not user_uuid:
+        return jsonify({"error": "user_uuid required"}), 400
+    try:
+        from db import get_db
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute("SELECT venue_id FROM user_favorites WHERE user_uuid = %s", (user_uuid,))
+            ids = [row[0] for row in cur.fetchall()]
+        return jsonify({"venue_ids": ids})
+    except Exception as exc:
+        app.logger.error(f"get_favorite_ids error: {exc}")
+        return jsonify({"error": "Database error"}), 500
+
+
+@app.route("/api/favorites")
+def get_favorites():
+    """Return full list of favorited venues for a user."""
+    user_uuid = request.args.get("user_uuid", "").strip()
+    if not user_uuid:
+        return jsonify({"error": "user_uuid required"}), 400
+    try:
+        from db import get_db
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute("""
+                SELECT uf.venue_id, v.name, v.city, v.state, v.lat, v.lng
+                FROM user_favorites uf
+                LEFT JOIN venues v ON v.id::text = uf.venue_id
+                WHERE uf.user_uuid = %s
+                ORDER BY uf.created_at DESC
+            """, (user_uuid,))
+            rows = cur.fetchall()
+        venues = [
+            {
+                "venue_id": r[0],
+                "venue_name": r[1],
+                "city": f"{r[2]}, {r[3]}" if r[3] else r[2],
+                "lat": float(r[4]) if r[4] else None,
+                "lng": float(r[5]) if r[5] else None,
+            }
+            for r in rows
+        ]
+        return jsonify({"favorites": venues, "count": len(venues)})
+    except Exception as exc:
+        app.logger.error(f"get_favorites error: {exc}")
+        return jsonify({"error": "Database error"}), 500
+
+
+@app.route("/api/favorites", methods=["POST"])
+def add_favorite():
+    """Add a venue to user's favorites."""
+    data = request.get_json() or {}
+    user_uuid = (data.get("user_uuid") or "").strip()
+    venue_id = (data.get("venue_id") or "").strip()
+    if not user_uuid or not venue_id:
+        return jsonify({"error": "user_uuid and venue_id required"}), 400
+    try:
+        from db import get_db
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute("""
+                INSERT INTO user_favorites (user_uuid, venue_id)
+                VALUES (%s, %s)
+                ON CONFLICT (user_uuid, venue_id) DO NOTHING
+            """, (user_uuid, venue_id))
+            db.commit()
+        return jsonify({"ok": True, "venue_id": venue_id})
+    except Exception as exc:
+        app.logger.error(f"add_favorite error: {exc}")
+        return jsonify({"error": "Database error"}), 500
+
+
+@app.route("/api/favorites/<venue_id>", methods=["DELETE"])
+def remove_favorite(venue_id):
+    """Remove a venue from user's favorites."""
+    user_uuid = request.args.get("user_uuid", "").strip()
+    if not user_uuid:
+        return jsonify({"error": "user_uuid required"}), 400
+    try:
+        from db import get_db
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute(
+                "DELETE FROM user_favorites WHERE user_uuid = %s AND venue_id = %s",
+                (user_uuid, venue_id)
+            )
+            db.commit()
+        return jsonify({"ok": True, "venue_id": venue_id})
+    except Exception as exc:
+        app.logger.error(f"remove_favorite error: {exc}")
+        return jsonify({"error": "Database error"}), 500
+
+
+# ---------------------------------------------------------------------------
+# /api/going — "I'm Going" event attendance (anonymous, keyed by device UUID)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/going/ids")
+def get_going_ids():
+    """Return event source IDs the user is attending on a given date."""
+    user_uuid = request.args.get("user_uuid", "").strip()
+    date_str = request.args.get("date", "").strip()
+    if not user_uuid:
+        return jsonify({"error": "user_uuid required"}), 400
+    try:
+        import datetime as _dt
+        from db import get_db
+        db = get_db()
+        with db.cursor() as cur:
+            if date_str:
+                cur.execute(
+                    "SELECT event_source_id FROM user_going WHERE user_uuid = %s AND event_date = %s",
+                    (user_uuid, date_str)
+                )
+            else:
+                cur.execute(
+                    "SELECT event_source_id FROM user_going WHERE user_uuid = %s",
+                    (user_uuid,)
+                )
+            ids = [row[0] for row in cur.fetchall()]
+        return jsonify({"event_ids": ids})
+    except Exception as exc:
+        app.logger.error(f"get_going_ids error: {exc}")
+        return jsonify({"error": "Database error"}), 500
+
+
+@app.route("/api/going", methods=["POST"])
+def mark_going():
+    """Mark user as attending an event."""
+    data = request.get_json() or {}
+    user_uuid = (data.get("user_uuid") or data.get("userUuid") or "").strip()
+    event_source = (data.get("event_source") or data.get("eventSource") or "").strip()
+    event_source_id = (data.get("event_source_id") or data.get("eventSourceId") or "").strip()
+    event_date = (data.get("event_date") or data.get("eventDate") or "").strip()
+    headliner_name = (data.get("headliner_name") or data.get("headlinerName") or "").strip() or None
+    venue_name = (data.get("venue_name") or data.get("venueName") or "").strip() or None
+    doors_time = (data.get("doors_time") or data.get("doorsTime") or "").strip() or None
+    estimated_stage_time = (data.get("estimated_stage_time") or data.get("estimatedStageTime") or "").strip() or None
+
+    if not user_uuid or not event_source or not event_source_id or not event_date:
+        return jsonify({"error": "user_uuid, event_source, event_source_id, event_date required"}), 400
+    try:
+        from db import get_db
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute("""
+                INSERT INTO user_going
+                  (user_uuid, event_source, event_source_id, event_date,
+                   headliner_name, venue_name, doors_time, estimated_stage_time)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_uuid, event_source, event_source_id) DO UPDATE
+                  SET event_date = EXCLUDED.event_date,
+                      headliner_name = EXCLUDED.headliner_name,
+                      venue_name = EXCLUDED.venue_name,
+                      doors_time = EXCLUDED.doors_time,
+                      estimated_stage_time = EXCLUDED.estimated_stage_time
+            """, (user_uuid, event_source, event_source_id, event_date,
+                  headliner_name, venue_name, doors_time, estimated_stage_time))
+            db.commit()
+        return jsonify({"ok": True, "event_source_id": event_source_id})
+    except Exception as exc:
+        app.logger.error(f"mark_going error: {exc}")
+        return jsonify({"error": "Database error"}), 500
+
+
+@app.route("/api/going/<event_source_id>", methods=["DELETE"])
+def unmark_going(event_source_id):
+    """Unmark user as attending an event."""
+    user_uuid = request.args.get("user_uuid", "").strip()
+    event_source = request.args.get("event_source", "").strip()
+    if not user_uuid:
+        return jsonify({"error": "user_uuid required"}), 400
+    try:
+        from db import get_db
+        db = get_db()
+        with db.cursor() as cur:
+            if event_source:
+                cur.execute(
+                    "DELETE FROM user_going WHERE user_uuid = %s AND event_source = %s AND event_source_id = %s",
+                    (user_uuid, event_source, event_source_id)
+                )
+            else:
+                cur.execute(
+                    "DELETE FROM user_going WHERE user_uuid = %s AND event_source_id = %s",
+                    (user_uuid, event_source_id)
+                )
+            db.commit()
+        return jsonify({"ok": True, "event_source_id": event_source_id})
+    except Exception as exc:
+        app.logger.error(f"unmark_going error: {exc}")
+        return jsonify({"error": "Database error"}), 500
 
 
 @app.route("/api/stagetime/search")
