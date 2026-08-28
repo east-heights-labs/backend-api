@@ -43,6 +43,7 @@ from venue_auth import (
     invite_expiry,
 )
 from db import get_db
+from limiter import limiter
 
 venue_bp = Blueprint("venue", __name__)
 
@@ -200,6 +201,7 @@ def get_invite_info():
 # ---------------------------------------------------------------------------
 
 @venue_bp.route("/api/venue/accept-invite", methods=["POST"])
+@limiter.limit("10 per minute")
 def accept_invite():
     """
     Body: { token: str, password: str }
@@ -255,6 +257,7 @@ def accept_invite():
 # ---------------------------------------------------------------------------
 
 @venue_bp.route("/api/venue/login", methods=["POST"])
+@limiter.limit("10 per minute")
 def venue_login():
     """
     Body: { email: str, password: str }

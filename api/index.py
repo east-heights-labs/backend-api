@@ -19,6 +19,14 @@ import math
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
+# Rate limiting — Flask-Limiter with Upstash Redis storage when available.
+# Applied only to auth endpoints (login, accept-invite) — NOT globally.
+# iOS /api/events gets hammered legitimately; a global limit would break it.
+# ---------------------------------------------------------------------------
+from limiter import limiter
+limiter.init_app(app)
+
+# ---------------------------------------------------------------------------
 # CORS — allow dashboard.eastheightslabs.com to call the API with credentials
 # ---------------------------------------------------------------------------
 from flask_cors import CORS
