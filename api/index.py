@@ -18,13 +18,7 @@ import math
 
 app = Flask(__name__)
 
-# ---------------------------------------------------------------------------
-# Rate limiting — Flask-Limiter with Upstash Redis storage when available.
-# Applied only to auth endpoints (login, accept-invite) — NOT globally.
-# iOS /api/events gets hammered legitimately; a global limit would break it.
-# ---------------------------------------------------------------------------
-from limiter import limiter
-limiter.init_app(app)
+
 
 # ---------------------------------------------------------------------------
 # CORS — allow dashboard.eastheightslabs.com to call the API with credentials
@@ -48,6 +42,14 @@ CORS(app,
 import sys as _sys
 import os as _os
 _sys.path.insert(0, _os.path.dirname(__file__))
+
+# ---------------------------------------------------------------------------
+# Rate limiting — imported AFTER sys.path is patched so api/limiter.py is
+# findable. Applied only to auth endpoints (login, accept-invite) — NOT
+# globally. iOS /api/events gets hammered legitimately.
+# ---------------------------------------------------------------------------
+from limiter import limiter
+limiter.init_app(app)
 
 from db import init_db_pool
 from venue_routes import venue_bp
