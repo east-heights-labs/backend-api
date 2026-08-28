@@ -20,10 +20,6 @@
     {
       "path": "/api/prefetch",
       "schedule": "0 19 * * *"
-    },
-    {
-      "path": "/api/prefetch",
-      "schedule": "0 1 * * *"
     }
   ]
 }
