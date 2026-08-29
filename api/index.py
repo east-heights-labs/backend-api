@@ -774,31 +774,28 @@ def events():
 PREFETCH_SECRET = os.environ.get("PREFETCH_SECRET", "")
 
 # Cities to pre-fetch — matches JamBase METRO_MAP
+# 16 cities × 2 dates × 31 days = 992 JamBase calls/month (free tier limit: 1,000)
+# Cron runs daily at 5 PM CT (22:00 UTC) — caches today + tomorrow
+# To expand: upgrade JamBase to paid tier first
 PREFETCH_CITIES = [
     # Original 12
-    ("houston",       29.7604,  -95.3698),
-    ("austin",        30.2672,  -97.7431),
-    ("dallas",        32.7767,  -96.7970),
-    ("nashville",     36.1627,  -86.7816),
-    ("neworleans",    29.9511,  -90.0715),
-    ("atlanta",       33.7490,  -84.3880),
-    ("chicago",       41.8781,  -87.6298),
-    ("newyork",       40.7128,  -74.0060),
-    ("losangeles",    34.0522,  -118.2437),
-    ("denver",        39.7392,  -104.9903),
-    ("seattle",       47.6062,  -122.3321),
-    ("miami",         25.7617,  -80.1918),
-    # Expansion cities (added 2026-08-29)
-    ("portland",      45.5051,  -122.6750),
-    ("sanfrancisco",  37.7749,  -122.4194),
-    ("phoenix",       33.4484,  -112.0740),
-    ("lasvegas",      36.1699,  -115.1398),
-    ("minneapolis",   44.9778,  -93.2650),
-    ("boston",        42.3601,  -71.0589),
-    ("philadelphia",  39.9526,  -75.1652),
-    ("washingtondc",  38.9072,  -77.0369),
-    ("charlotte",     35.2271,  -80.8431),
-    ("kansascity",    39.0997,  -94.5786),
+    ("houston",      29.7604,  -95.3698),
+    ("austin",       30.2672,  -97.7431),
+    ("dallas",       32.7767,  -96.7970),
+    ("nashville",    36.1627,  -86.7816),
+    ("neworleans",   29.9511,  -90.0715),
+    ("atlanta",      33.7490,  -84.3880),
+    ("chicago",      41.8781,  -87.6298),
+    ("newyork",      40.7128,  -74.0060),
+    ("losangeles",   34.0522,  -118.2437),
+    ("denver",       39.7392,  -104.9903),
+    ("seattle",      47.6062,  -122.3321),
+    ("miami",        25.7617,  -80.1918),
+    # Expansion cities (added 2026-08-29; capped at 16 for free tier)
+    ("portland",     45.5051,  -122.6750),
+    ("sanfrancisco", 37.7749,  -122.4194),
+    ("minneapolis",  44.9778,  -93.2650),
+    ("boston",       42.3601,  -71.0589),
 ]
 PREFETCH_RADIUS = 10.0
 
@@ -916,17 +913,11 @@ SEARCH_CITIES = [
     {"id": "denver",       "name": "Denver",        "lat": 39.7392,  "lng": -104.9903},
     {"id": "seattle",      "name": "Seattle",       "lat": 47.6062,  "lng": -122.3321},
     {"id": "miami",        "name": "Miami",         "lat": 25.7617,  "lng": -80.1918},
-    # Expansion cities (added 2026-08-29)
+    # Expansion cities (added 2026-08-29; capped at 16 for free tier)
     {"id": "portland",     "name": "Portland",      "lat": 45.5051,  "lng": -122.6750},
     {"id": "sanfrancisco", "name": "San Francisco", "lat": 37.7749,  "lng": -122.4194},
-    {"id": "phoenix",      "name": "Phoenix",       "lat": 33.4484,  "lng": -112.0740},
-    {"id": "lasvegas",     "name": "Las Vegas",     "lat": 36.1699,  "lng": -115.1398},
     {"id": "minneapolis",  "name": "Minneapolis",   "lat": 44.9778,  "lng": -93.2650},
     {"id": "boston",       "name": "Boston",        "lat": 42.3601,  "lng": -71.0589},
-    {"id": "philadelphia", "name": "Philadelphia",  "lat": 39.9526,  "lng": -75.1652},
-    {"id": "washingtondc", "name": "Washington DC", "lat": 38.9072,  "lng": -77.0369},
-    {"id": "charlotte",    "name": "Charlotte",     "lat": 35.2271,  "lng": -80.8431},
-    {"id": "kansascity",   "name": "Kansas City",   "lat": 39.0997,  "lng": -94.5786},
 ]
 
 
