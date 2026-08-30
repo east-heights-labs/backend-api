@@ -1276,6 +1276,18 @@ def stagetime():
         reverse=True
     )[:10]
 
+    # Outlier rejection: drop points more than 90 min from median
+    # Protects against single-user manipulation and accidental wrong submissions
+    def reject_outliers(points):
+        if len(points) < 3:
+            return points  # not enough data to reject outliers
+        mins_list = [r["stage_minutes_from_midnight"] for r in points]
+        mins_list.sort()
+        median = mins_list[len(mins_list) // 2]
+        return [r for r in points if abs(r["stage_minutes_from_midnight"] - median) <= 90]
+
+    recent = reject_outliers(recent)
+
     recent_minutes = []
     for r in recent:
         weight = 2 if r.get("source") == "fan" else 1
@@ -1364,6 +1376,19 @@ def submit_stagetime_report():
         from db import get_db
         db = get_db()
         with db.cursor() as cur:
+            # Rate limit: one submission per UUID per artist per calendar day
+            if fan_uuid and parsed_date:
+                cur.execute("""
+                    SELECT COUNT(*) FROM fan_stagetime_reports
+                    WHERE fan_uuid = %s
+                      AND lower(artist_name) = lower(%s)
+                      AND event_date = %s
+                      AND submitted_at > now() - interval '24 hours'
+                """, (fan_uuid, artist_name, parsed_date))
+                existing = cur.fetchone()[0]
+                if existing >= 1:
+                    return jsonify({"ok": True, "message": "Report already received for this artist today", "duplicate": True}), 200
+
             cur.execute("""
                 INSERT INTO fan_stagetime_reports
                   (artist_name, venue_name, city, event_date, stage_time, fan_uuid)
