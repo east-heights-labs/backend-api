@@ -1372,23 +1372,52 @@ def submit_stagetime_report():
         except ValueError:
             return jsonify({"error": "date must be YYYY-MM-DD format"}), 400
 
+    force_update = bool(data.get("force_update"))
+
     try:
         from db import get_db
         db = get_db()
         with db.cursor() as cur:
-            # Rate limit: one submission per UUID per artist per calendar day
+            # Check for existing submission from this UUID for this artist+date
+            existing_row = None
+            existing_count = 0
             if fan_uuid and parsed_date:
                 cur.execute("""
-                    SELECT COUNT(*) FROM fan_stagetime_reports
+                    SELECT id, stage_time, submitted_at
+                    FROM fan_stagetime_reports
                     WHERE fan_uuid = %s
                       AND lower(artist_name) = lower(%s)
                       AND event_date = %s
-                      AND submitted_at > now() - interval '24 hours'
+                    ORDER BY submitted_at ASC
                 """, (fan_uuid, artist_name, parsed_date))
-                existing = cur.fetchone()[0]
-                if existing >= 1:
-                    return jsonify({"ok": True, "message": "Report already received for this artist today", "duplicate": True}), 200
+                rows = cur.fetchall()
+                existing_count = len(rows)
+                if rows:
+                    existing_row = rows[0]  # always update the first (original) row
 
+            if existing_row and not force_update:
+                # First duplicate: tell iOS to prompt the user
+                return jsonify({
+                    "ok": False,
+                    "duplicate": True,
+                    "existing_time": str(existing_row[1])[:5],  # HH:MM
+                    "message": "You already reported a time for this show."
+                }), 200
+
+            if existing_row and force_update:
+                if existing_count >= 2:
+                    # Already updated once — silently ignore further attempts
+                    return jsonify({"ok": True, "message": "Report already received", "ignored": True}), 200
+                # Update the original row
+                cur.execute("""
+                    UPDATE fan_stagetime_reports
+                    SET stage_time = %s, submitted_at = now()
+                    WHERE id = %s
+                """, (stage_time, existing_row[0]))
+                db.commit()
+                return jsonify({"ok": True, "message": f"Stage time updated for {artist_name}", "updated": True})
+
+            # No existing row — fresh insert
             cur.execute("""
                 INSERT INTO fan_stagetime_reports
                   (artist_name, venue_name, city, event_date, stage_time, fan_uuid)
