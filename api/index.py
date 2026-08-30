@@ -923,6 +923,7 @@ SEARCH_CITIES = [
 
 def _tm_keyword_search(keyword, lat, lng, start_dt, end_dt):
     """Search TM events by keyword near a lat/lng."""
+    import time as _time
     if not TICKETMASTER_KEY:
         return []
     params = {
@@ -941,9 +942,11 @@ def _tm_keyword_search(keyword, lat, lng, start_dt, end_dt):
         req = URLRequest(url, headers={"Accept": "application/json"})
         with urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
+            _time.sleep(0.12)  # 120ms between TM calls — stay under 5 req/s limit
             return data.get("_embedded", {}).get("events", [])
     except Exception as ex:
         app.logger.warning(f"TM keyword search error ({lat},{lng}): {ex}")
+        _time.sleep(0.5)  # back off longer on error
         return []
 
 
@@ -1280,6 +1283,7 @@ def stagetime():
 
     estimated = None
     confidence = "none"
+    heuristic = False
     total_data_points = len(fan_data_points) + len(setlist_data_points)
 
     if recent_minutes:
@@ -1292,6 +1296,15 @@ def stagetime():
             confidence = "medium"
         else:
             confidence = "low"
+    else:
+        # Fallback: billing-position heuristic.
+        # Headliners typically take the stage 75-90 min after doors.
+        # We don't have doors time here, so return a generic estimate
+        # that the iOS client can combine with the event's doors_time.
+        # Confidence = none signals "heuristic only, no real data."
+        estimated = None  # iOS will apply its own heuristic using doors_time
+        confidence = "none"
+        heuristic = True
 
     return jsonify({
         "artist_name": artist_display_name,
@@ -1302,6 +1315,7 @@ def stagetime():
         "data_points": total_data_points,
         "fan_reports": len(fan_data_points),
         "setlistfm_points": len(setlist_data_points),
+        "heuristic": heuristic,
     })
 
 
