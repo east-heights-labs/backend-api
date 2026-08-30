@@ -1058,15 +1058,35 @@ def search_venues():
     return jsonify({"query": q, "count": len(venues), "venues": venues})
 
 
+# In-memory cache for artist search results.
+# Key: (query_lower, date_str). Value: (timestamp, result_list)
+# Vercel serverless: cache lives for the duration of a warm function instance (~minutes).
+# Good enough to protect against rapid repeated searches for the same artist.
+_artist_search_cache: dict = {}
+_ARTIST_CACHE_TTL = 300  # 5 minutes
+
+
 @app.route("/api/search/artists")
 def search_artists_route():
     """Search for an artist's upcoming shows across all supported cities."""
+    import time as _time
     q = request.args.get("q", "").strip()
     if len(q) < 2:
         return jsonify({"query": q, "count": 0, "shows": []})
 
-    date_str = request.args.get("date")
-    start_dt, end_dt = _search_date_window(date_str)
+    date_str = request.args.get("date") or ""
+    cache_key = (q.lower(), date_str)
+
+    # Check cache
+    cached = _artist_search_cache.get(cache_key)
+    if cached:
+        ts, shows = cached
+        if _time.time() - ts < _ARTIST_CACHE_TTL:
+            return jsonify({"query": q, "count": len(shows), "shows": shows, "cached": True})
+        else:
+            del _artist_search_cache[cache_key]
+
+    start_dt, end_dt = _search_date_window(date_str or None)
 
     all_raw = []
     for city in SEARCH_CITIES:
@@ -1123,6 +1143,12 @@ def search_artists_route():
         })
 
     shows.sort(key=lambda s: s.get("date") or "9999-99-99")
+    # Store in cache
+    _artist_search_cache[cache_key] = (_time.time(), shows)
+    # Evict old entries if cache grows large
+    if len(_artist_search_cache) > 200:
+        oldest_key = min(_artist_search_cache, key=lambda k: _artist_search_cache[k][0])
+        del _artist_search_cache[oldest_key]
     return jsonify({"query": q, "count": len(shows), "shows": shows})
 
 
@@ -1372,7 +1398,7 @@ def submit_stagetime_report():
         except ValueError:
             return jsonify({"error": "date must be YYYY-MM-DD format"}), 400
 
-    force_update = bool(data.get("force_update"))
+    is_edit = bool(data.get("is_edit"))  # True when user is editing an existing submission
 
     try:
         from db import get_db
@@ -1380,48 +1406,60 @@ def submit_stagetime_report():
         with db.cursor() as cur:
             # Check for existing submission from this UUID for this artist+date
             existing_row = None
-            existing_count = 0
             if fan_uuid and parsed_date:
                 cur.execute("""
-                    SELECT id, stage_time, submitted_at
+                    SELECT id, stage_time, edit_count
                     FROM fan_stagetime_reports
                     WHERE fan_uuid = %s
                       AND lower(artist_name) = lower(%s)
                       AND event_date = %s
                     ORDER BY submitted_at ASC
+                    LIMIT 1
                 """, (fan_uuid, artist_name, parsed_date))
-                rows = cur.fetchall()
-                existing_count = len(rows)
-                if rows:
-                    existing_row = rows[0]  # always update the first (original) row
+                row = cur.fetchone()
+                if row:
+                    existing_row = {"id": row[0], "stage_time": str(row[1])[:5], "edit_count": row[2]}
 
-            if existing_row and not force_update:
-                # First duplicate: tell iOS to prompt the user
+            if existing_row and not is_edit:
+                # Already submitted — return status so iOS shows Edit button
                 return jsonify({
-                    "ok": False,
-                    "duplicate": True,
-                    "existing_time": str(existing_row[1])[:5],  # HH:MM
-                    "message": "You already reported a time for this show."
+                    "ok": True,
+                    "already_submitted": True,
+                    "existing_time": existing_row["stage_time"],
+                    "edit_count": existing_row["edit_count"],
+                    "can_edit": existing_row["edit_count"] < 5,
+                    "message": "Already reported for this show today."
                 }), 200
 
-            if existing_row and force_update:
-                if existing_count >= 2:
-                    # Already updated once — silently ignore further attempts
-                    return jsonify({"ok": True, "message": "Report already received", "ignored": True}), 200
-                # Update the original row
+            if existing_row and is_edit:
+                # Edit request — enforce 5-edit cap
+                if existing_row["edit_count"] >= 5:
+                    return jsonify({
+                        "ok": False,
+                        "error": "Edit limit reached. You can edit up to 5 times per show."
+                    }), 429
+                # Overwrite row, increment edit_count
                 cur.execute("""
                     UPDATE fan_stagetime_reports
-                    SET stage_time = %s, submitted_at = now()
+                    SET stage_time = %s,
+                        submitted_at = now(),
+                        edit_count = edit_count + 1
                     WHERE id = %s
-                """, (stage_time, existing_row[0]))
+                """, (stage_time, existing_row["id"]))
                 db.commit()
-                return jsonify({"ok": True, "message": f"Stage time updated for {artist_name}", "updated": True})
+                return jsonify({
+                    "ok": True,
+                    "updated": True,
+                    "edit_count": existing_row["edit_count"] + 1,
+                    "can_edit": existing_row["edit_count"] + 1 < 5,
+                    "message": f"Stage time updated for {artist_name}"
+                })
 
             # No existing row — fresh insert
             cur.execute("""
                 INSERT INTO fan_stagetime_reports
-                  (artist_name, venue_name, city, event_date, stage_time, fan_uuid)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                  (artist_name, venue_name, city, event_date, stage_time, fan_uuid, edit_count)
+                VALUES (%s, %s, %s, %s, %s, %s, 0)
             """, (artist_name, venue_name, city, parsed_date, stage_time, fan_uuid))
             db.commit()
     except Exception as exc:
