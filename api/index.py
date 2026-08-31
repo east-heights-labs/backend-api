@@ -991,6 +991,7 @@ def search_venues():
     start_dt, end_dt = _search_date_window(date_str)
     venues = []
     seen_ids = set()
+    seen_names = set()  # name-based dedup across phases
 
     # Phase 1: DB search
     try:
@@ -1016,6 +1017,7 @@ def search_venues():
                     "next_event": None,
                 })
                 seen_ids.add(vid)
+                seen_names.add(vname.lower())
     except Exception as ex:
         app.logger.warning(f"Venue search DB error: {ex}")
 
@@ -1040,7 +1042,11 @@ def search_venues():
             our_id = f"tm_venue_{venue_id}"
             if our_id in seen_ids:
                 continue
+            tm_venue_name = venue_raw.get("name", "").lower()
+            if tm_venue_name in seen_names:
+                continue
             seen_tm.add(venue_id)
+            seen_names.add(tm_venue_name)
             location = venue_raw.get("location", {})
             try:
                 lat = float(location.get("latitude", 0))
