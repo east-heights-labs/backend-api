@@ -1374,6 +1374,57 @@ def stagetime():
     })
 
 
+@app.route("/api/stagetime/report/check", methods=["GET"])
+def check_stagetime_report():
+    """
+    Check whether a fan has already submitted a stage time for a given artist+date.
+    Pure read — no side effects.
+    GET /api/stagetime/report/check?artist_name=&event_date=&fan_uuid=
+    Returns: { has_report: bool, stage_time: "HH:MM" | null, can_edit: bool }
+    """
+    artist_name = request.args.get("artist_name", "").strip()
+    event_date = request.args.get("event_date", "").strip()
+    fan_uuid = request.args.get("fan_uuid", "").strip()
+
+    if not artist_name or not event_date or not fan_uuid:
+        return jsonify({"error": "artist_name, event_date, and fan_uuid required"}), 400
+
+    try:
+        import datetime as _dt
+        _dt.date.fromisoformat(event_date)  # validate format
+    except ValueError:
+        return jsonify({"error": "event_date must be YYYY-MM-DD"}), 400
+
+    try:
+        from db import get_db
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute("""
+                SELECT stage_time, edit_count
+                FROM fan_stagetime_reports
+                WHERE fan_uuid = %s
+                  AND lower(artist_name) = lower(%s)
+                  AND event_date = %s
+                ORDER BY submitted_at ASC
+                LIMIT 1
+            """, (fan_uuid, artist_name, event_date))
+            row = cur.fetchone()
+    except Exception as exc:
+        app.logger.error(f"check_stagetime_report DB error: {exc}")
+        return jsonify({"error": "DB error"}), 500
+
+    if not row:
+        return jsonify({"has_report": False, "stage_time": None, "can_edit": True})
+
+    stage_time = str(row[0])[:5]  # HH:MM
+    edit_count = row[1]
+    return jsonify({
+        "has_report": True,
+        "stage_time": stage_time,
+        "can_edit": edit_count < 5
+    })
+
+
 @app.route("/api/stagetime/report", methods=["POST"])
 def submit_stagetime_report():
     """
