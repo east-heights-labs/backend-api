@@ -1001,10 +1001,12 @@ def _tm_keyword_search(keyword, lat, lng, start_dt, end_dt):
         return []
 
 
-def _search_date_window(date_str=None):
+def _search_date_window(date_str=None, single_day=False):
     import datetime as _dt
     start = _dt.date.fromisoformat(date_str) if date_str else _dt.date.today()
-    end = start + _dt.timedelta(days=30)
+    # When single_day=True (artist search scoped to a specific night), search only that date.
+    # When False (venue search), use a 30-day window to surface upcoming events.
+    end = start if single_day else start + _dt.timedelta(days=30)
     return f"{start.isoformat()}T00:00:00Z", f"{end.isoformat()}T23:59:59Z"
 
 
@@ -1145,7 +1147,9 @@ def search_artists_route():
         else:
             del _artist_search_cache[cache_key]
 
-    start_dt, end_dt = _search_date_window(date_str or None)
+    # Artist search is always scoped to the specific date when provided
+    # (user is searching who is playing tonight / on their selected night)
+    start_dt, end_dt = _search_date_window(date_str or None, single_day=bool(date_str))
 
     all_raw = []
     for city in SEARCH_CITIES:
