@@ -441,6 +441,8 @@ NON_MUSIC_KEYWORDS = {
     "comedy", "stand-up", "standup", "theater", "theatre", "ballet",
     "opera", "circus", "magic", "family", "kids", "children",
     "conference", "expo", "convention", "seminar",
+    "museum", "gallery", "exhibition", "art show", "art fair",
+    "escape room", "trivia", "bingo",
 }
 
 def _classify_venue_event_title(title: str) -> str:
