@@ -434,25 +434,39 @@ MUSIC_GENRES = {
     "reggae", "latin", "alternative", "punk", "music",
 }
 
-NON_MUSIC_KEYWORDS = {
+import re as _re
+
+NON_MUSIC_KEYWORDS = [
+    # Sports
     "volleyball", "basketball", "football", "baseball", "soccer", "hockey",
     "tennis", "golf", "wrestling", "boxing", "mma", "ufc", "gymnastics",
-    "swimming", "track", "lacrosse", "softball", "rugby", "cricket",
+    "swimming", "lacrosse", "softball", "rugby", "cricket",
+    # Performing arts (non-music)
     "comedy", "stand-up", "standup", "theater", "theatre", "ballet",
-    "opera", "circus", "magic", "family", "kids", "children",
+    "opera", "circus", "magic show",
+    # Events
     "conference", "expo", "convention", "seminar",
+    # Visual arts / attractions
     "museum", "gallery", "exhibition", "art show", "art fair",
     "escape room", "trivia", "bingo",
-}
+]
+# Pre-compile word-boundary patterns for each keyword to avoid substring false matches
+# e.g. "track" should not match "soundtrack" or "tracking"
+_NON_MUSIC_PATTERNS = [
+    _re.compile(r'\b' + _re.escape(kw) + r'\b', _re.IGNORECASE)
+    for kw in NON_MUSIC_KEYWORDS
+]
 
 def _classify_venue_event_title(title: str) -> str:
     """Classify a venue-submitted event as music or other based on title keywords.
-    Defaults to music since most venue dashboard events are concerts."""
+    Uses word-boundary matching to avoid substring false positives.
+    Defaults to music since most venue dashboard events are concerts.
+    Note: 'family', 'kids', 'children' intentionally excluded — kids concerts are music.
+    Long-term fix: add category column to venue_events table (P2 backlog)."""
     if not title:
         return "music"
-    title_lower = title.lower()
-    for kw in NON_MUSIC_KEYWORDS:
-        if kw in title_lower:
+    for pattern in _NON_MUSIC_PATTERNS:
+        if pattern.search(title):
             return "other"
     return "music"
 
