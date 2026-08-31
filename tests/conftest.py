@@ -22,6 +22,10 @@ os.environ.setdefault("DATABASE_URL", DATABASE_URL)
 # Suppress limiter in-memory warning during tests
 os.environ.setdefault("REDIS_URL", "")
 
+# Venue auth secrets — test values, not production
+os.environ.setdefault("VENUE_JWT_SECRET", "test-jwt-secret-not-for-production-use")
+os.environ.setdefault("VENUE_ADMIN_SECRET", "test-admin-secret-not-for-production-use")
+
 
 @pytest.fixture(scope="session")
 def app():

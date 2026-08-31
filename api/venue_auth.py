@@ -25,7 +25,9 @@ from flask import request, jsonify, g
 # Config
 # ---------------------------------------------------------------------------
 
-JWT_SECRET = os.environ.get("VENUE_JWT_SECRET", "dev-secret-change-in-production")
+JWT_SECRET = os.environ.get("VENUE_JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError("VENUE_JWT_SECRET env var is required and not set")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_DAYS = 7
 JWT_REFRESH_THRESHOLD_HOURS = 24   # reissue token if it's been >24h since iat

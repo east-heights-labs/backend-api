@@ -47,7 +47,9 @@ from limiter import limiter
 
 venue_bp = Blueprint("venue", __name__)
 
-ADMIN_SECRET = os.environ.get("VENUE_ADMIN_SECRET", "dev-admin-secret")
+ADMIN_SECRET = os.environ.get("VENUE_ADMIN_SECRET")
+if not ADMIN_SECRET:
+    raise RuntimeError("VENUE_ADMIN_SECRET env var is required and not set")
 
 
 # ---------------------------------------------------------------------------
@@ -471,15 +473,27 @@ def update_venue_event(event_id):
         return err
 
     data = request.get_json() or {}
-    allowed = ["title", "event_date", "doors_time", "stage_time",
-               "ticket_url", "price_min", "price_max", "description",
-               "image_url", "is_cancelled"]
-    updates = {k: v for k, v in data.items() if k in allowed}
+    # Static field mapping — never interpolate untrusted keys into SQL
+    FIELD_MAP = {
+        "title": "title",
+        "event_date": "event_date",
+        "doors_time": "doors_time",
+        "stage_time": "stage_time",
+        "ticket_url": "ticket_url",
+        "price_min": "price_min",
+        "price_max": "price_max",
+        "description": "description",
+        "image_url": "image_url",
+        "is_cancelled": "is_cancelled",
+    }
+    updates = {FIELD_MAP[k]: v for k, v in data.items() if k in FIELD_MAP}
 
     if not updates:
         return jsonify({"error": "No valid fields to update"}), 400
 
-    set_clause = ", ".join(f"{k} = %s" for k in updates)
+    # Build static SET clause from known-safe column names
+    set_parts = [f"{col} = %s" for col in updates]
+    set_clause = ", ".join(set_parts)
     values = list(updates.values()) + [event_id]
 
     db = get_db()

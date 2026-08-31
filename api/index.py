@@ -24,12 +24,19 @@ app = Flask(__name__)
 # CORS — allow dashboard.eastheightslabs.com to call the API with credentials
 # ---------------------------------------------------------------------------
 from flask_cors import CORS
+def _cors_origins(origin):
+    """Allow dashboard production, localhost, and Vercel preview deployments."""
+    if not origin:
+        return False
+    if origin in ("https://dashboard.eastheightslabs.com", "http://localhost:3000"):
+        return True
+    # Allow Vercel preview deployments (flask-cors doesn't support globs)
+    if origin.startswith("https://venue-dashboard-") and origin.endswith(".vercel.app"):
+        return True
+    return False
+
 CORS(app,
-     origins=[
-         "https://dashboard.eastheightslabs.com",
-         "http://localhost:3000",
-         "https://venue-dashboard-*.vercel.app",
-     ],
+     origins=_cors_origins,
      supports_credentials=True,
      allow_headers=["Content-Type", "Authorization", "X-Admin-Secret"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
@@ -559,6 +566,14 @@ def events():
     except (ValueError, TypeError):
         return jsonify({"error": "Invalid parameters"}), 400
 
+    # Bounds validation
+    if not (-90 <= lat <= 90):
+        return jsonify({"error": "lat must be between -90 and 90"}), 400
+    if not (-180 <= lng <= 180):
+        return jsonify({"error": "lng must be between -180 and 180"}), 400
+    if not (1 <= radius <= 100):
+        radius = max(1, min(radius, 100))  # clamp silently rather than error
+
     # --- Cache check ---
     cache_key = _cache_key(lat, lng, radius, req_date)
     cached = _cache_get(cache_key)
@@ -1060,8 +1075,10 @@ def search_venues():
 
 # In-memory cache for artist search results.
 # Key: (query_lower, date_str). Value: (timestamp, result_list)
-# Vercel serverless: cache lives for the duration of a warm function instance (~minutes).
-# Good enough to protect against rapid repeated searches for the same artist.
+# LIMITATION: Vercel serverless spins up multiple independent instances.
+# This cache is NOT shared across instances — each cold start gets an empty dict.
+# It protects against rapid repeated searches within one warm instance only.
+# For true cross-instance caching, replace with Upstash Redis (same pattern as event cache).
 _artist_search_cache: dict = {}
 _ARTIST_CACHE_TTL = 300  # 5 minutes
 
