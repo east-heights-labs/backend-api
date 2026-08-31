@@ -1761,3 +1761,66 @@ def search_artists():
     except Exception:
         return jsonify({"artists": []})
 
+
+@app.route("/privacy")
+def privacy_policy():
+    html = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy — OnStage Live</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 720px; margin: 48px auto; padding: 0 24px; color: #1a1a1a; line-height: 1.7; }
+    h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
+    h2 { font-size: 18px; font-weight: 600; margin-top: 32px; }
+    p, li { font-size: 15px; }
+    ul { padding-left: 20px; }
+    .meta { color: #666; font-size: 13px; margin-bottom: 40px; }
+    a { color: #5856d6; }
+  </style>
+</head>
+<body>
+  <h1>Privacy Policy</h1>
+  <p class="meta">OnStage Live &mdash; East Heights Labs, LLC &mdash; Effective August 31, 2026</p>
+
+  <h2>Information We Collect</h2>
+  <ul>
+    <li><strong>Location data</strong> &mdash; Used to find live music events near you. Your location is sent to our servers only to retrieve nearby events and is not stored or logged.</li>
+    <li><strong>Anonymous device identifier</strong> &mdash; A randomly generated UUID stored on your device and used to associate your saved favorites. This identifier is not linked to your name, email, or any personal information.</li>
+    <li><strong>Stage time reports</strong> &mdash; If you submit a stage time, we store the reported time and your anonymous device UUID to associate contributions with a device.</li>
+  </ul>
+
+  <h2>How We Use Your Information</h2>
+  <ul>
+    <li>Location is used only to surface nearby venues and events in the app.</li>
+    <li>Your anonymous device UUID is used solely to save and retrieve your favorites across sessions.</li>
+    <li>Stage time reports are used to improve the accuracy of show schedules for all users.</li>
+  </ul>
+
+  <h2>Third-Party Services</h2>
+  <p>OnStage Live uses the following third-party services to provide event data:</p>
+  <ul>
+    <li>Ticketmaster Discovery API</li>
+    <li>JamBase</li>
+    <li>Setlist.fm</li>
+    <li>Railway (database hosting)</li>
+    <li>Vercel (API hosting)</li>
+  </ul>
+  <p>Each of these services has its own privacy policy. We share only the minimum data necessary (your location coordinates) to retrieve relevant results.</p>
+
+  <h2>Data Retention</h2>
+  <p>Favorites and stage time reports are retained as long as necessary to provide the service. We do not sell, rent, or share your data with third parties for advertising or marketing purposes.</p>
+
+  <h2>Children's Privacy</h2>
+  <p>OnStage Live is not directed at children under 13. We do not knowingly collect personal information from children.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy? Contact us at <a href="mailto:info@eastheightslabs.com">info@eastheightslabs.com</a></p>
+  <p>East Heights Labs, LLC &mdash; Houston, TX</p>
+</body>
+</html>
+"""
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
