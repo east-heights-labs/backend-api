@@ -434,6 +434,26 @@ MUSIC_GENRES = {
     "reggae", "latin", "alternative", "punk", "music",
 }
 
+NON_MUSIC_KEYWORDS = {
+    "volleyball", "basketball", "football", "baseball", "soccer", "hockey",
+    "tennis", "golf", "wrestling", "boxing", "mma", "ufc", "gymnastics",
+    "swimming", "track", "lacrosse", "softball", "rugby", "cricket",
+    "comedy", "stand-up", "standup", "theater", "theatre", "ballet",
+    "opera", "circus", "magic", "family", "kids", "children",
+    "conference", "expo", "convention", "seminar",
+}
+
+def _classify_venue_event_title(title: str) -> str:
+    """Classify a venue-submitted event as music or other based on title keywords.
+    Defaults to music since most venue dashboard events are concerts."""
+    if not title:
+        return "music"
+    title_lower = title.lower()
+    for kw in NON_MUSIC_KEYWORDS:
+        if kw in title_lower:
+            return "other"
+    return "music"
+
 def _classify_event(raw: dict) -> str:
     """Return 'music' or 'other' based on Ticketmaster classifications."""
     classifications = raw.get("classifications", [{}])
@@ -648,7 +668,7 @@ def events():
                 "min_price": float(r[6]) if r[6] else None,
                 "popularity": 0.5,
                 "distance_miles": haversine_miles(lat, lng, vlat, vlng),
-                "category": "music",
+                "category": _classify_venue_event_title(r[1]),
                 "venue_website": get_venue_website(r[10]),
                 "image_url": r[8],
             })
