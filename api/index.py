@@ -25,15 +25,17 @@ app = Flask(__name__)
 # ---------------------------------------------------------------------------
 from flask_cors import CORS
 def _cors_origins(origin):
-    """Allow dashboard production, localhost, and Vercel preview deployments."""
+    """Allow dashboard production, localhost, and Vercel preview deployments.
+    Must return the origin string (not True) for flask-cors to echo it in the header.
+    """
     if not origin:
-        return False
+        return None
     if origin in ("https://dashboard.eastheightslabs.com", "http://localhost:3000"):
-        return True
+        return origin
     # Allow Vercel preview deployments (flask-cors doesn't support globs)
     if origin.startswith("https://venue-dashboard-") and origin.endswith(".vercel.app"):
-        return True
-    return False
+        return origin
+    return None
 
 CORS(app,
      origins=_cors_origins,
