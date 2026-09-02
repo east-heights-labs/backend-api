@@ -22,26 +22,42 @@ app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
 # CORS — allow dashboard.eastheightslabs.com to call the API with credentials
+# flask-cors 6.x does not support a callable for origins, so we use an
+# after_request hook to set headers dynamically based on the request origin.
 # ---------------------------------------------------------------------------
-from flask_cors import CORS
-def _cors_origins(origin):
-    """Allow dashboard production, localhost, and Vercel preview deployments.
-    Must return the origin string (not True) for flask-cors to echo it in the header.
-    """
+def _is_allowed_origin(origin: str) -> bool:
     if not origin:
-        return None
+        return False
     if origin in ("https://dashboard.eastheightslabs.com", "http://localhost:3000"):
-        return origin
-    # Allow Vercel preview deployments (flask-cors doesn't support globs)
+        return True
     if origin.startswith("https://venue-dashboard-") and origin.endswith(".vercel.app"):
-        return origin
-    return None
+        return True
+    return False
 
-CORS(app,
-     origins=_cors_origins,
-     supports_credentials=True,
-     allow_headers=["Content-Type", "Authorization", "X-Admin-Secret"],
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+@app.after_request
+def _apply_cors(response):
+    from flask import request as _req
+    origin = _req.headers.get("Origin", "")
+    if _is_allowed_origin(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Secret"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    return response
+
+@app.route("/api/venue/preflight", methods=["OPTIONS"])
+def _global_options():
+    """Catch-all OPTIONS handler — Flask returns 200 with after_request headers."""
+    return "", 200
+
+# Handle OPTIONS for all /api/venue/* routes
+@app.before_request
+def _handle_options():
+    from flask import request as _req
+    if _req.method == "OPTIONS":
+        from flask import make_response
+        resp = make_response("", 200)
+        return resp
 
 # ---------------------------------------------------------------------------
 # Database + venue routes
