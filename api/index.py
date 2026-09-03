@@ -425,6 +425,8 @@ def normalize_jambase_event(raw, user_lat, user_lng):
         "image_url": raw.get("image") or None,
         # Free show flag — JamBase boolean; False when not present
         "is_accessible_for_free": bool(raw.get("isAccessibleForFree", False)),
+        # Venue capacity — JamBase location.maximumAttendeeCapacity; None when absent
+        "venue_capacity": venue_raw.get("maximumAttendeeCapacity") or None,
         # Event status normalization — JamBase uses schema.org event status URIs
         # For rescheduled: startDate = new date, previousStartDate = original date
         "event_status": _normalize_jb_event_status(raw.get("eventStatus", "")),
@@ -646,6 +648,7 @@ def normalize_tm_event(raw, user_lat, user_lng):
         "max_price": max_price,
         "image_url": image_url,
         "is_accessible_for_free": False,  # TM has no free show flag
+        "venue_capacity": None,             # TM events endpoint has no venue capacity
         "performers": tm_performers,
         "popularity": raw.get("score", 0),
         "distance_miles": haversine_miles(user_lat, user_lng, vlat, vlng),
