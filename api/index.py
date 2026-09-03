@@ -394,6 +394,9 @@ def normalize_jambase_event(raw, user_lat, user_lng):
         "distance_miles": haversine_miles(user_lat, user_lng, vlat, vlng),
         "category": category,
         "venue_website": get_venue_website(venue_raw.get("name", "")),
+        # x-subtitle: opener or supporting act string (e.g. "with Zakk Sabbath")
+        # Present only when JamBase has supporting act info; pass through as-is.
+        "subtitle": raw.get("x-subtitle") or None,
         # Event status normalization — JamBase uses schema.org event status URIs
         # For rescheduled: startDate = new date, previousStartDate = original date
         "event_status": _normalize_jb_event_status(raw.get("eventStatus", "")),
