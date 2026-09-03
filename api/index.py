@@ -316,6 +316,18 @@ def clean_venue_display_name(name: str) -> str:
     return n
 
 
+def _normalize_jb_event_status(raw_status: str) -> str:
+    """Map JamBase schema.org eventStatus URI to our internal status string.
+    JamBase values: EventScheduled, EventCancelled, EventRescheduled, EventPostponed, EventMovedOnline.
+    We normalize to: scheduled | cancelled | rescheduled."""
+    s = raw_status.lower()
+    if "cancelled" in s:
+        return "cancelled"
+    if "rescheduled" in s or "postponed" in s:
+        return "rescheduled"
+    return "scheduled"
+
+
 def normalize_jambase_event(raw, user_lat, user_lng):
     """Normalize JamBase event to our internal schema."""
     venue_raw = raw.get("location", {})
@@ -382,6 +394,11 @@ def normalize_jambase_event(raw, user_lat, user_lng):
         "distance_miles": haversine_miles(user_lat, user_lng, vlat, vlng),
         "category": category,
         "venue_website": get_venue_website(venue_raw.get("name", "")),
+        # Event status normalization — JamBase uses schema.org event status URIs
+        # For rescheduled: startDate = new date, previousStartDate = original date
+        "event_status": _normalize_jb_event_status(raw.get("eventStatus", "")),
+        "rescheduled_date": start_dt[:10] if _normalize_jb_event_status(raw.get("eventStatus", "")) == "rescheduled" else None,
+        "original_date": raw.get("previousStartDate") if _normalize_jb_event_status(raw.get("eventStatus", "")) == "rescheduled" else None,
     }
 
 
@@ -529,6 +546,22 @@ def normalize_tm_event(raw, user_lat, user_lng):
     price_ranges = raw.get("priceRanges", [])
     min_price = price_ranges[0].get("min") if price_ranges else None
 
+    # Event status — TM uses dates.status.code: onsale, offsale, cancelled, rescheduled, postponed
+    tm_status_code = raw.get("dates", {}).get("status", {}).get("code", "onsale").lower()
+    if tm_status_code == "cancelled":
+        event_status = "cancelled"
+    elif tm_status_code in ("rescheduled", "postponed"):
+        event_status = "rescheduled"
+    else:
+        event_status = "scheduled"
+
+    # For rescheduled events:
+    # - local_date = new/current date (dates.start.localDate)
+    # - original_date = original date before reschedule (dates.initialStartDate.localDate, not always present)
+    original_date = None
+    if event_status == "rescheduled":
+        original_date = raw.get("dates", {}).get("initialStartDate", {}).get("localDate")  # may be None
+
     return {
         "id": f"tm_{raw.get('id')}",
         "source": "ticketmaster",
@@ -537,6 +570,9 @@ def normalize_tm_event(raw, user_lat, user_lng):
         "date": local_date,
         "doors_time": local_time if local_time else None,
         "status": raw.get("dates", {}).get("status", {}).get("code", "onsale"),
+        "event_status": event_status,       # scheduled | cancelled | rescheduled
+        "rescheduled_date": local_date if event_status == "rescheduled" else None,  # new date
+        "original_date": original_date,       # original date before reschedule (TM: initialStartDate, may be None)
         "type": "Concert",
         "venue": {
             "id": f"tm_venue_{venue.get('id')}",
