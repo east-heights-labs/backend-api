@@ -423,6 +423,8 @@ def normalize_jambase_event(raw, user_lat, user_lng):
         "subtitle": raw.get("x-subtitle") or None,
         # Hero image — JamBase top-level 'image' field; x-promoImage is consistently empty
         "image_url": raw.get("image") or None,
+        # Free show flag — JamBase boolean; False when not present
+        "is_accessible_for_free": bool(raw.get("isAccessibleForFree", False)),
         # Event status normalization — JamBase uses schema.org event status URIs
         # For rescheduled: startDate = new date, previousStartDate = original date
         "event_status": _normalize_jb_event_status(raw.get("eventStatus", "")),
@@ -643,6 +645,7 @@ def normalize_tm_event(raw, user_lat, user_lng):
         "min_price": min_price,
         "max_price": max_price,
         "image_url": image_url,
+        "is_accessible_for_free": False,  # TM has no free show flag
         "performers": tm_performers,
         "popularity": raw.get("score", 0),
         "distance_miles": haversine_miles(user_lat, user_lng, vlat, vlng),
