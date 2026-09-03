@@ -350,13 +350,30 @@ def normalize_jambase_event(raw, user_lat, user_lng):
     event_date = start_dt[:10] if start_dt else ""
     event_time = start_dt[11:19] if len(start_dt) > 10 else None
 
-    # Artists — JamBase uses 'performers' array
-    performers = raw.get("performers", [])
-    headliner = performers[0] if performers else {}
+    # Artists — JamBase uses 'performer' array (schema.org field name)
+    performers_raw = raw.get("performer", [])
+    # Sort by x-performanceRank ascending; unranked go to end
+    performers_sorted = sorted(performers_raw, key=lambda p: p.get("x-performanceRank") or 999)
+    headliner = performers_sorted[0] if performers_sorted else {}
     headliner_name = headliner.get("name", "") or raw.get("name", "")
-    # Strip venue from name if format is "Artist at Venue"
-    if " at " in headliner_name and not performers:
+    # Strip venue from name if format is "Artist at Venue" and no performers listed
+    if " at " in headliner_name and not performers_sorted:
         headliner_name = headliner_name.split(" at ")[0].strip()
+
+    # Normalize performers to consistent schema
+    jb_performers = [
+        {
+            "rank": p.get("x-performanceRank") or (i + 1),
+            "name": p.get("name", ""),
+            "is_headliner": bool(p.get("x-isHeadliner", False)),
+            # genre may be a string, list, or None depending on JamBase response.
+            # Normalize to [str] in all cases to avoid iOS Codable type mismatch.
+            "genres": (lambda g: g if isinstance(g, list) else ([g] if isinstance(g, str) and g else []))(p.get("genre")),
+            "url": p.get("url"),
+        }
+        for i, p in enumerate(performers_sorted)
+        if p.get("name")
+    ]
 
     # Category — JamBase type field
     event_type = raw.get("@type", "Concert")
@@ -396,6 +413,7 @@ def normalize_jambase_event(raw, user_lat, user_lng):
         "ticket_url": ticket_url,
         "min_price": jb_min_price,
         "max_price": jb_max_price,
+        "performers": jb_performers,
         "popularity": 0,
         "distance_miles": haversine_miles(user_lat, user_lng, vlat, vlng),
         "category": category,
@@ -540,6 +558,20 @@ def normalize_tm_event(raw, user_lat, user_lng):
     attractions = raw.get("_embedded", {}).get("attractions", [{}])
     headliner = attractions[0] if attractions else {}
 
+    # Normalize performers array — TM attractions[], position implies rank (index 0 = headliner)
+    # TM has no genre per-attraction at event level; omit genres for TM performers
+    tm_performers = [
+        {
+            "rank": i + 1,
+            "name": a.get("name", ""),
+            "is_headliner": i == 0,
+            "genres": [],
+            "url": a.get("url"),
+        }
+        for i, a in enumerate(attractions)
+        if a.get("name")
+    ]
+
     loc = venue.get("location", {})
     try:
         vlat = float(loc.get("latitude", 0))
@@ -601,6 +633,7 @@ def normalize_tm_event(raw, user_lat, user_lng):
         "ticket_url": raw.get("url"),
         "min_price": min_price,
         "max_price": max_price,
+        "performers": tm_performers,
         "popularity": raw.get("score", 0),
         "distance_miles": haversine_miles(user_lat, user_lng, vlat, vlng),
         "category": _classify_event(raw),
