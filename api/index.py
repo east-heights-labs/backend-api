@@ -488,15 +488,24 @@ def _classify_venue_event_title(title: str) -> str:
             return "other"
     return "music"
 
+# Segments that are explicitly non-music. Everything else — including "undefined"
+# and empty — defaults to music. TM frequently omits classification for legitimate
+# concerts; OnStage is music-first, so misclassifying a concert as "other" is
+# worse UX than the reverse.
+NON_MUSIC_SEGMENTS = {"sports", "arts & theatre", "film", "miscellaneous"}
+
 def _classify_event(raw: dict) -> str:
     """Return 'music' or 'other' based on Ticketmaster classifications."""
     classifications = raw.get("classifications", [{}])
     for c in classifications:
         segment = c.get("segment", {}).get("name", "").lower()
         genre = c.get("genre", {}).get("name", "").lower()
+        if segment in NON_MUSIC_SEGMENTS:
+            return "other"
         if segment == "music" or genre in MUSIC_GENRES:
             return "music"
-    return "other"
+    # No explicit non-music segment found — default to music
+    return "music"
 
 def normalize_tm_event(raw, user_lat, user_lng):
     """Normalize a Ticketmaster event to our internal schema."""
@@ -1185,7 +1194,9 @@ def search_artists_route():
 
         classifications = raw.get("classifications", [{}])
         segment = classifications[0].get("segment", {}).get("name", "").lower() if classifications else ""
-        if segment != "music":
+        # Use denylist: only exclude explicitly non-music segments.
+        # "Undefined" and empty pass through — TM omits classification for real concerts.
+        if segment in NON_MUSIC_SEGMENTS:
             continue
 
         embedded = raw.get("_embedded", {})
