@@ -365,6 +365,11 @@ def normalize_jambase_event(raw, user_lat, user_lng):
     # Offers / tickets
     offers = raw.get("offers", [])
     ticket_url = offers[0].get("url") if offers else raw.get("url", "")
+    # Price — JamBase primary offer has priceSpecification with minPrice/maxPrice
+    primary_offer = next((o for o in offers if o.get("category") == "ticketingLinkPrimary"), offers[0] if offers else {})
+    price_spec = primary_offer.get("priceSpecification", {})
+    jb_min_price = float(price_spec["minPrice"]) if price_spec.get("minPrice") else None
+    jb_max_price = float(price_spec["maxPrice"]) if price_spec.get("maxPrice") else None
 
     return {
         "id": f"jb_{raw.get('identifier', '').replace('jambase:', '')}",
@@ -389,7 +394,8 @@ def normalize_jambase_event(raw, user_lat, user_lng):
             "uri": headliner.get("url"),
         },
         "ticket_url": ticket_url,
-        "min_price": None,
+        "min_price": jb_min_price,
+        "max_price": jb_max_price,
         "popularity": 0,
         "distance_miles": haversine_miles(user_lat, user_lng, vlat, vlng),
         "category": category,
@@ -545,9 +551,10 @@ def normalize_tm_event(raw, user_lat, user_lng):
     local_time = start.get("localTime", "")  # "20:00:00"
     local_date = start.get("localDate", "")
 
-    # Price range
+    # Price range — TM provides priceRanges array with min and max per tier
     price_ranges = raw.get("priceRanges", [])
     min_price = price_ranges[0].get("min") if price_ranges else None
+    max_price = price_ranges[0].get("max") if price_ranges else None
 
     # Event status — TM uses dates.status.code: onsale, offsale, cancelled, rescheduled, postponed
     tm_status_code = raw.get("dates", {}).get("status", {}).get("code", "onsale").lower()
@@ -593,6 +600,7 @@ def normalize_tm_event(raw, user_lat, user_lng):
         },
         "ticket_url": raw.get("url"),
         "min_price": min_price,
+        "max_price": max_price,
         "popularity": raw.get("score", 0),
         "distance_miles": haversine_miles(user_lat, user_lng, vlat, vlng),
         "category": _classify_event(raw),
