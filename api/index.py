@@ -1378,6 +1378,7 @@ def stagetime():
 
     # --- Source 2: Setlist.fm ---
     setlist_data_points = []
+    recent_setlists = []  # populated below if Setlist.fm fetch succeeds
     artist_display_name = artist_name
     mbid = None
 
@@ -1438,6 +1439,39 @@ def stagetime():
                             break
                 except Exception:
                     break
+
+            # Extract recent setlists with song lists (Build 20 — surface on iOS detail page)
+            # Pull from the same all_setlists fetch — no additional API calls.
+            recent_setlists = []
+            for s in all_setlists:
+                if len(recent_setlists) >= 3:
+                    break
+                event_date_raw = s.get("eventDate")  # "DD-MM-YYYY"
+                if not event_date_raw:
+                    continue
+                # Flatten all sets into a single song name list
+                songs = []
+                for st in s.get("sets", {}).get("set", []):
+                    for song in st.get("song", []):
+                        name = song.get("name", "").strip()
+                        if name:
+                            songs.append(name)
+                if not songs:  # skip stubs with no song data
+                    continue
+                try:
+                    d, m, y = event_date_raw.split("-")
+                    venue = s.get("venue", {})
+                    city = venue.get("city", {})
+                    recent_setlists.append({
+                        "date": f"{y}-{m}-{d}",
+                        "venue_name": venue.get("name"),
+                        "city": city.get("name"),
+                        "state": city.get("stateCode"),
+                        "songs": songs,
+                        "setlist_url": s.get("url"),
+                    })
+                except Exception:
+                    continue
 
             for s in all_setlists:
                 event_date = s.get("eventDate")   # "DD-MM-YYYY"
@@ -1542,6 +1576,7 @@ def stagetime():
         "fan_reports": len(fan_data_points),
         "setlistfm_points": len(setlist_data_points),
         "heuristic": heuristic,
+        "recent_setlists": recent_setlists,  # up to 3 recent setlists with song lists
     })
 
 
