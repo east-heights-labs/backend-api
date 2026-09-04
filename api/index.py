@@ -290,7 +290,7 @@ def fetch_jambase_events(lat, lng, radius_miles, req_date):
             data = json.loads(resp.read())
             raw_events = data.get("events", [])
             normalized = [normalize_jambase_event(e, lat, lng) for e in raw_events]
-            return [e for e in normalized if e is not None]
+            return [e for e in normalized if e is not None and e.get("distance_miles", 999) <= radius_miles]
     except Exception as ex:
         print(f"JamBase error: {ex}")
         return []
