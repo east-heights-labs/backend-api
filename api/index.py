@@ -1902,22 +1902,28 @@ def _verify_apple_token(id_token: str) -> dict:
     Verify Apple identity token. Returns decoded claims on success.
     Raises ValueError on any verification failure.
     """
+    import sys as _sys
     try:
         header = _pyjwt.get_unverified_header(id_token)
     except _pyjwt.exceptions.DecodeError as e:
+        print(f"[SIWA_DEBUG] DecodeError reading header: {e}", file=_sys.stderr)
         raise ValueError(f"Cannot read token header: {e}")
 
     kid = header.get("kid")
     if not kid:
+        print("[SIWA_DEBUG] No kid in token header", file=_sys.stderr)
         raise ValueError("Token missing kid in header")
 
+    print(f"[SIWA_DEBUG] kid={kid}", file=_sys.stderr)
     jwks = _get_apple_jwks()
     if kid not in jwks:
-        # Possibly a new key — force refresh once
+        print(f"[SIWA_DEBUG] kid not in cache, force-refreshing JWKS", file=_sys.stderr)
         jwks = _get_apple_jwks(force_refresh=True)
     if kid not in jwks:
+        print(f"[SIWA_DEBUG] kid={kid} not found after refresh. Available kids: {list(jwks.keys())}", file=_sys.stderr)
         raise ValueError(f"Unknown kid={kid} not found in Apple JWKS after refresh")
 
+    print(f"[SIWA_DEBUG] kid found, constructing public key", file=_sys.stderr)
     public_key = _pyjwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwks[kid]))
     try:
         claims = _pyjwt.decode(
@@ -1928,9 +1934,12 @@ def _verify_apple_token(id_token: str) -> dict:
             issuer=APPLE_ISSUER,
             leeway=300,  # 300s tolerance — covers Vercel cold start + network latency
         )
-    except _pyjwt.exceptions.ExpiredSignatureError:
+        print(f"[SIWA_DEBUG] JWT decode success, sub={claims.get('sub','MISSING')}", file=_sys.stderr)
+    except _pyjwt.exceptions.ExpiredSignatureError as e:
+        print(f"[SIWA_DEBUG] ExpiredSignatureError: {e}", file=_sys.stderr)
         raise ValueError("Apple identity token has expired")
     except _pyjwt.exceptions.InvalidTokenError as e:
+        print(f"[SIWA_DEBUG] InvalidTokenError: {e}", file=_sys.stderr)
         raise ValueError(f"Apple token verification failed: {e}")
 
     if not claims.get("sub"):
