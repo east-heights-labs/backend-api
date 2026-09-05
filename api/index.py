@@ -1906,24 +1906,22 @@ def _verify_apple_token(id_token: str) -> dict:
     try:
         header = _pyjwt.get_unverified_header(id_token)
     except _pyjwt.exceptions.DecodeError as e:
-        print(f"[SIWA_DEBUG] DecodeError reading header: {e}", file=_sys.stderr)
+        print(f"[SIWA] DecodeError reading header: {e}", file=_sys.stderr)
         raise ValueError(f"Cannot read token header: {e}")
 
     kid = header.get("kid")
     if not kid:
-        print("[SIWA_DEBUG] No kid in token header", file=_sys.stderr)
+        print("[SIWA] No kid in token header", file=_sys.stderr)
         raise ValueError("Token missing kid in header")
 
-    print(f"[SIWA_DEBUG] kid={kid}", file=_sys.stderr)
     jwks = _get_apple_jwks()
+    print(f"[SIWA] JWKS fetched, kid count: {len(jwks)}", file=_sys.stderr)
+    print(f"[SIWA] Token kid: {kid}, found in JWKS: {kid in jwks}", file=_sys.stderr)
     if kid not in jwks:
-        print(f"[SIWA_DEBUG] kid not in cache, force-refreshing JWKS", file=_sys.stderr)
         jwks = _get_apple_jwks(force_refresh=True)
+        print(f"[SIWA] After force-refresh, kid found: {kid in jwks}", file=_sys.stderr)
     if kid not in jwks:
-        print(f"[SIWA_DEBUG] kid={kid} not found after refresh. Available kids: {list(jwks.keys())}", file=_sys.stderr)
         raise ValueError(f"Unknown kid={kid} not found in Apple JWKS after refresh")
-
-    print(f"[SIWA_DEBUG] kid found, constructing public key", file=_sys.stderr)
     public_key = _pyjwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwks[kid]))
     try:
         claims = _pyjwt.decode(
@@ -1934,12 +1932,12 @@ def _verify_apple_token(id_token: str) -> dict:
             issuer=APPLE_ISSUER,
             leeway=300,  # 300s tolerance — covers Vercel cold start + network latency
         )
-        print(f"[SIWA_DEBUG] JWT decode success, sub={claims.get('sub','MISSING')}", file=_sys.stderr)
+        print(f"[SIWA] JWT decoded OK, sub present: {'sub' in claims}", file=_sys.stderr)
     except _pyjwt.exceptions.ExpiredSignatureError as e:
-        print(f"[SIWA_DEBUG] ExpiredSignatureError: {e}", file=_sys.stderr)
+        print(f"[SIWA] ExpiredSignatureError: {e}", file=_sys.stderr)
         raise ValueError("Apple identity token has expired")
     except _pyjwt.exceptions.InvalidTokenError as e:
-        print(f"[SIWA_DEBUG] InvalidTokenError: {e}", file=_sys.stderr)
+        print(f"[SIWA] InvalidTokenError: {type(e).__name__}: {e}", file=_sys.stderr)
         raise ValueError(f"Apple token verification failed: {e}")
 
     if not claims.get("sub"):
@@ -1965,9 +1963,13 @@ def auth_apple():
     try:
         claims = _verify_apple_token(id_token)
     except ValueError as e:
+        import sys as _sys2
+        print(f"[SIWA] _verify_apple_token raised: {e}", file=_sys2.stderr)
         app.logger.warning(f"Apple auth failed: {e}")
         return jsonify({"error": "Invalid or expired identity token"}), 401
 
+    import sys as _sys2
+    print("[SIWA] Token verified OK", file=_sys2.stderr)
     apple_id    = claims["sub"]
     email       = claims.get("email")  # None on repeat sign-ins or private relay
     display_name = claims.get("name")  # Only present on very first Apple sign-in
@@ -2010,6 +2012,7 @@ def auth_apple():
                 )
 
         db.commit()
+        print("[SIWA] DB complete", file=_sys2.stderr)
 
         return jsonify({
             "user_id":        user_id,
