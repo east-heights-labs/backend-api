@@ -1926,7 +1926,7 @@ def _verify_apple_token(id_token: str) -> dict:
             algorithms=["RS256"],
             audience=APPLE_CLIENT_ID,  # com.eastheightslabs.onstage
             issuer=APPLE_ISSUER,
-            leeway=60,  # 60s clock skew tolerance
+            leeway=300,  # 300s tolerance — covers Vercel cold start + network latency
         )
     except _pyjwt.exceptions.ExpiredSignatureError:
         raise ValueError("Apple identity token has expired")
