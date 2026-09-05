@@ -15,6 +15,9 @@ from urllib.parse import urlencode
 import json
 import os
 import math
+import threading
+import time
+import jwt as _pyjwt  # PyJWT — RS256 Apple token verification
 
 app = Flask(__name__)
 
@@ -1741,6 +1744,178 @@ def submit_stagetime_report():
         return jsonify({"error": "Failed to save report"}), 500
 
     return jsonify({"ok": True, "message": f"Stage time reported for {artist_name}"})
+
+
+# ---------------------------------------------------------------------------
+# /api/auth/apple — Sign in with Apple
+#
+# Flow:
+#   iOS sends identityToken (JWT from Apple SDK) + optional device_uuid.
+#   Backend verifies token against Apple JWKS (RS256), creates or returns
+#   user record, upserts device UUID for future backfill.
+#   Stores device UUID in user_device_uuids for backfill of anonymous
+#   activity (favorites, going, stage reports). Linking of existing anonymous
+#   activity to the authenticated user is deferred post-alpha.
+# ---------------------------------------------------------------------------
+
+APPLE_JWKS_URL  = "https://appleid.apple.com/auth/keys"
+APPLE_ISSUER    = "https://appleid.apple.com"
+APPLE_CLIENT_ID = "com.eastheightslabs.onstage"  # must match Xcode bundle ID exactly
+
+# JWKS cache — module-level, shared across requests
+# Double-checked locking: check before lock, check again after acquire
+# to prevent duplicate fetches on concurrent cold-start requests.
+_jwks_cache: dict = {}       # {kid: jwk_dict}
+_jwks_fetched_at: float = 0  # monotonic seconds
+_jwks_lock = threading.Lock()
+_JWKS_TTL = 3600  # 1 hour
+
+
+def _fetch_apple_jwks() -> dict:
+    """Fetch Apple public keys from JWKS endpoint. Returns {kid: key_dict}."""
+    req = URLRequest(APPLE_JWKS_URL, headers={"Accept": "application/json"})
+    with urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read())
+    return {k["kid"]: k for k in data.get("keys", [])}
+
+
+def _get_apple_jwks(force_refresh: bool = False) -> dict:
+    """
+    Return cached JWKS. Double-checked lock prevents duplicate fetches.
+    force_refresh=True bypasses TTL (used on unknown kid).
+    """
+    global _jwks_cache, _jwks_fetched_at
+    now = time.monotonic()
+    # First check — outside lock (fast path for hot cache)
+    if not force_refresh and _jwks_cache and (now - _jwks_fetched_at) < _JWKS_TTL:
+        return _jwks_cache
+    # Acquire lock
+    with _jwks_lock:
+        # Second check — inside lock (another thread may have fetched already)
+        now = time.monotonic()
+        if force_refresh or not _jwks_cache or (now - _jwks_fetched_at) >= _JWKS_TTL:
+            _jwks_cache = _fetch_apple_jwks()
+            _jwks_fetched_at = time.monotonic()
+    return _jwks_cache
+
+
+def _verify_apple_token(id_token: str) -> dict:
+    """
+    Verify Apple identity token. Returns decoded claims on success.
+    Raises ValueError on any verification failure.
+    """
+    try:
+        header = _pyjwt.get_unverified_header(id_token)
+    except _pyjwt.exceptions.DecodeError as e:
+        raise ValueError(f"Cannot read token header: {e}")
+
+    kid = header.get("kid")
+    if not kid:
+        raise ValueError("Token missing kid in header")
+
+    jwks = _get_apple_jwks()
+    if kid not in jwks:
+        # Possibly a new key — force refresh once
+        jwks = _get_apple_jwks(force_refresh=True)
+    if kid not in jwks:
+        raise ValueError(f"Unknown kid={kid} not found in Apple JWKS after refresh")
+
+    public_key = _pyjwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwks[kid]))
+    try:
+        claims = _pyjwt.decode(
+            id_token,
+            public_key,
+            algorithms=["RS256"],
+            audience=APPLE_CLIENT_ID,  # com.eastheightslabs.onstage
+            issuer=APPLE_ISSUER,
+            leeway=60,  # 60s clock skew tolerance
+        )
+    except _pyjwt.exceptions.ExpiredSignatureError:
+        raise ValueError("Apple identity token has expired")
+    except _pyjwt.exceptions.InvalidTokenError as e:
+        raise ValueError(f"Apple token verification failed: {e}")
+
+    if not claims.get("sub"):
+        raise ValueError("Token missing sub claim")
+
+    return claims
+
+
+@app.route("/api/auth/apple", methods=["POST"])
+def auth_apple():
+    """
+    Sign in with Apple endpoint.
+    Verifies Apple identity token, creates or returns user record.
+    Safe to call on every app launch after initial sign-in.
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    id_token = (body.get("identity_token") or "").strip()
+    device_uuid = (body.get("device_uuid") or "").strip() or None
+
+    if not id_token:
+        return jsonify({"error": "identity_token required"}), 400
+
+    try:
+        claims = _verify_apple_token(id_token)
+    except ValueError as e:
+        app.logger.warning(f"Apple auth failed: {e}")
+        return jsonify({"error": "Invalid or expired identity token"}), 401
+
+    apple_id    = claims["sub"]
+    email       = claims.get("email")  # None on repeat sign-ins or private relay
+    display_name = claims.get("name")  # Only present on very first Apple sign-in
+
+    try:
+        from db import get_db
+        db = get_db()
+        with db.cursor() as cur:
+
+            # Look up existing user by apple_id
+            cur.execute(
+                "SELECT id, tier, tier_source, tier_expires_at, email, display_name "
+                "FROM users WHERE apple_id = %s",
+                (apple_id,)
+            )
+            row = cur.fetchone()
+
+            if row:
+                user_id = str(row["id"])
+            else:
+                # First sign-in — create user (tier defaults to 'free' via column default)
+                cur.execute(
+                    "INSERT INTO users (apple_id, email, display_name) "
+                    "VALUES (%s, %s, %s) RETURNING id, tier, tier_source, "
+                    "tier_expires_at, email, display_name",
+                    (apple_id, email, display_name)
+                )
+                row = cur.fetchone()
+                user_id = str(row["id"])
+
+            # Upsert device UUID — stores device history for future backfill.
+            # Existing anonymous activity linking is deferred post-alpha.
+            if device_uuid:
+                cur.execute(
+                    "INSERT INTO user_device_uuids (user_id, device_uuid) "
+                    "VALUES (%s, %s) "
+                    "ON CONFLICT (user_id, device_uuid) "
+                    "DO UPDATE SET last_seen_at = NOW()",
+                    (user_id, device_uuid)
+                )
+
+        db.commit()
+
+        return jsonify({
+            "user_id":        user_id,
+            "tier":           row["tier"],
+            "tier_source":    row["tier_source"],
+            "tier_expires_at": row["tier_expires_at"].isoformat() if row["tier_expires_at"] else None,
+            "email":          row["email"],
+            "display_name":   row["display_name"],
+        })
+
+    except Exception as exc:
+        app.logger.error(f"auth_apple DB error: {exc}")
+        return jsonify({"error": "Server error"}), 500
 
 
 # ---------------------------------------------------------------------------
