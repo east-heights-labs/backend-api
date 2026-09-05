@@ -1152,7 +1152,9 @@ def search_venues():
             break
 
     date_str = request.args.get("date")
-    start_dt, end_dt = _search_date_window(date_str)
+    # When a specific date is requested, search TM for that day only (single_day=True).
+    # When no date, use 30-day window to surface upcoming events.
+    start_dt, end_dt = _search_date_window(date_str, single_day=bool(date_str))
     venues = []
     seen_ids = set()
     seen_names = set()  # name-based dedup across phases
@@ -1222,6 +1224,21 @@ def search_venues():
             attractions = embedded.get("attractions", [])
             headliner = attractions[0].get("name", raw.get("name", "")) if attractions else raw.get("name", "")
             dates = raw.get("dates", {}).get("start", {})
+            event_date = dates.get("localDate")
+            # When a specific date was requested, only populate next_event if the
+            # TM event is on that exact date. Venue still appears in results either
+            # way — row just has no artist line when there's no show that night.
+            if date_str and event_date != date_str:
+                next_event = None
+            else:
+                next_event = {
+                    "title": raw.get("name", ""),
+                    "date": event_date,
+                    "doors_time": dates.get("localTime"),
+                    "headliner": headliner,
+                    "ticket_url": raw.get("url"),
+                    "event_id": f"tm_{raw.get('id')}",
+                }
             venues.append({
                 "venue_id": our_id,
                 "venue_name": venue_raw.get("name", ""),
@@ -1229,14 +1246,7 @@ def search_venues():
                 "lat": lat,
                 "lng": lng,
                 "address": venue_raw.get("address", {}).get("line1"),
-                "next_event": {
-                    "title": raw.get("name", ""),
-                    "date": dates.get("localDate"),
-                    "doors_time": dates.get("localTime"),
-                    "headliner": headliner,
-                    "ticket_url": raw.get("url"),
-                    "event_id": f"tm_{raw.get('id')}",
-                },
+                "next_event": next_event,
             })
             seen_ids.add(our_id)
 
