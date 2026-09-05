@@ -1078,7 +1078,13 @@ def prefetch():
 
 SEARCH_CITIES = [
     # Original 12
-    {"id": "houston",      "name": "Houston",       "lat": 29.7604,  "lng": -95.3698},
+    # supplemental_venue_ids: TM venue IDs force-included in results regardless of distance.
+    # Used for large metro venues just outside the 25mi radius (e.g. The Woodlands for Houston).
+    {"id": "houston",      "name": "Houston",       "lat": 29.7604,  "lng": -95.3698,
+     "supplemental_venue_ids": [
+         "KovZpZAE6k6A",   # The Cynthia Woods Mitchell Pavilion sponsored by Huntsman
+         "KovZ917AJfi",    # Event Center at The Cynthia Woods Mitchell Pavilion
+     ]},
     {"id": "austin",       "name": "Austin",        "lat": 30.2672,  "lng": -97.7431},
     {"id": "dallas",       "name": "Dallas",        "lat": 32.7767,  "lng": -96.7970},
     {"id": "nashville",    "name": "Nashville",     "lat": 36.1627,  "lng": -86.7816},
@@ -1287,11 +1293,86 @@ def search_artists_route():
     # (user is searching who is playing tonight / on their selected night)
     start_dt, end_dt = _search_date_window(date_str or None, single_day=bool(date_str))
 
+    # ---------------------------------------------------------------------------
+    # Step 1: Try attraction ID lookup for better supporting-act coverage.
+    # Resolve artist name → TM attraction ID → query events by ID (global).
+    # This surfaces shows where the artist is a supporting act, not just headliner.
+    # Fallback to keyword search if attraction lookup fails or finds no results.
+    # ---------------------------------------------------------------------------
+    attraction_id = None
+    if TICKETMASTER_KEY:
+        try:
+            _att_params = urlencode({
+                "apikey": TICKETMASTER_KEY,
+                "keyword": q,
+                "size": 5,
+            })
+            _att_url = f"https://app.ticketmaster.com/discovery/v2/attractions.json?{_att_params}"
+            _att_req = URLRequest(_att_url, headers={"Accept": "application/json"})
+            with urlopen(_att_req, timeout=8) as _att_resp:
+                _att_data = json.loads(_att_resp.read())
+            _att_list = _att_data.get("_embedded", {}).get("attractions", [])
+            if _att_list:
+                _top = _att_list[0]
+                _att_name = _top.get("name", "").lower().strip()
+                _q_norm = q.lower().strip()
+                # Name match guard: query must appear in attraction name or vice versa.
+                # Prevents blindly using an unrelated top result.
+                if _q_norm in _att_name or _att_name in _q_norm:
+                    attraction_id = _top.get("id")
+        except Exception as _att_ex:
+            app.logger.warning(f"Attraction lookup failed for '{q}': {_att_ex}")
+
     all_raw = []
-    for city in SEARCH_CITIES:
-        events = _tm_keyword_search(q, city["lat"], city["lng"], start_dt, end_dt)
-        for raw in events:
-            all_raw.append((city["name"], raw))
+
+    if attraction_id:
+        # Step 2: Fetch events by attraction ID — global, no city loop needed.
+        # size=50 to capture touring artists with many dates.
+        try:
+            _ev_params = urlencode({
+                "apikey": TICKETMASTER_KEY,
+                "attractionId": attraction_id,
+                "startDateTime": start_dt,
+                "endDateTime": end_dt,
+                "size": 50,
+            })
+            _ev_url = f"https://app.ticketmaster.com/discovery/v2/events.json?{_ev_params}"
+            _ev_req = URLRequest(_ev_url, headers={"Accept": "application/json"})
+            with urlopen(_ev_req, timeout=10) as _ev_resp:
+                _ev_data = json.loads(_ev_resp.read())
+            _ev_list = _ev_data.get("_embedded", {}).get("events", [])
+            # Filter to supported cities by distance (25mi radius) or supplemental venue IDs.
+            # supplemental_venue_ids: force-include specific out-of-radius venues per city
+            # (e.g. Cynthia Woods Mitchell Pavilion for Houston at 28mi).
+            for _raw in _ev_list:
+                _venues = _raw.get("_embedded", {}).get("venues", [{}])
+                _venue_raw = _venues[0] if _venues else {}
+                _venue_id = _venue_raw.get("id", "")
+                _loc = _venue_raw.get("location", {})
+                try:
+                    _vlat = float(_loc.get("latitude", 0))
+                    _vlng = float(_loc.get("longitude", 0))
+                except (ValueError, TypeError):
+                    continue
+                if not _vlat or not _vlng:
+                    continue
+                for _city in SEARCH_CITIES:
+                    _supp = _city.get("supplemental_venue_ids", [])
+                    _in_radius = haversine_miles(_city["lat"], _city["lng"], _vlat, _vlng) <= 25
+                    _is_supplemental = _venue_id in _supp
+                    if _in_radius or _is_supplemental:
+                        all_raw.append((_city["name"], _raw))
+                        break  # Only add once even if near multiple cities
+        except Exception as _ev_ex:
+            app.logger.warning(f"Attraction event fetch failed for id={attraction_id}: {_ev_ex}")
+            attraction_id = None  # Fall through to keyword search
+
+    if not attraction_id or not all_raw:
+        # Keyword search fallback — used when attraction lookup fails or finds nothing.
+        for city in SEARCH_CITIES:
+            events = _tm_keyword_search(q, city["lat"], city["lng"], start_dt, end_dt)
+            for raw in events:
+                all_raw.append((city["name"], raw))
 
     seen_ids = set()
     shows = []
