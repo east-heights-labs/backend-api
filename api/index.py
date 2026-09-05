@@ -381,6 +381,13 @@ def normalize_jambase_event(raw, user_lat, user_lng):
     # Category — JamBase type field
     event_type = raw.get("@type", "Concert")
     category = "music" if event_type in ("Concert", "Festival") else "other"
+    # Secondary name-based check: override to "other" when JamBase tags a non-music
+    # event as Concert (e.g. comedy shows at music venues).
+    # Uses pre-compiled word-boundary patterns to avoid substring false matches.
+    if category == "music":
+        _ev_name_lower = raw.get("name", "").lower()
+        if any(p.search(_ev_name_lower) for p in _NON_MUSIC_PATTERNS):
+            category = "other"
 
     # Offers / tickets
     offers = raw.get("offers", [])
@@ -513,7 +520,7 @@ NON_MUSIC_KEYWORDS = [
     "tennis", "golf", "wrestling", "boxing", "mma", "ufc", "gymnastics",
     "swimming", "lacrosse", "softball", "rugby", "cricket",
     # Performing arts (non-music)
-    "comedy", "stand-up", "standup", "theater", "theatre", "ballet",
+    "comedy", "comedian", "stand-up", "standup", "theater", "theatre", "ballet",
     "opera", "circus", "magic show",
     # Events
     "conference", "expo", "convention", "seminar",
